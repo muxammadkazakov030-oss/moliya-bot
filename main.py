@@ -1,83 +1,122 @@
+import os
 import time
-import json
+import threading
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
-from google.genai import types
 
-# 1. Калитлар ва созламалар
-NEWS_API_KEY = "1043ae8441ae40cb935"
-GEMINI_API_KEY = "AQ.Ab8RN6LbZpd0ZwBZBjvQP-LM9JM..." # Ўзингизнинг калитингиз
-TELEGRAM_TOKEN = "9270595335:AAFrPS1w1aEo5kUFUC7e9xnliR0DVal2yfM"
-TELEGRAM_CHAT_ID = "5955129098"
 
-# 2. Клиентни созлаш
+# --- 1. Render HTTP сервер (порт очиш ва "Live" ҳолати учун) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Moliya bot is running!")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+
+threading.Thread(target=run_web_server, daemon=True).start()
+
+
+# --- 2. Калитлар ва созламалар ---
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "1043ae8441ae40cb935")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LbZpd0ZwBZBjv...")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "9270595335:AAFrPS1w1aE...")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5955129098")
+
+
+# --- 3. Gemini клиент ва текширилган хабарлар ---
 client = genai.Client(api_key=GEMINI_API_KEY)
 processed_urls = set()
 
-SYSTEM_PROMPT = """Sen global moliyaviy tahlilchi va avtomatlashtirilgan savdo agentisan.
-Sizning vazifangiz XAU/USD (Oltin) va EUR/USD juftliklari bo'yicha yangiliklarni tahlil qilish.
-Faqatgina agar yangilik kuchli savdo signaliga ega bo'lsa, JSON formatida javob bering:
-{
-  "signal": true,
-  "asset": "XAU/USD yoki EUR/USD",
-  "direction": "BUY yoki SELL",
-  "reason": "Qisqacha asosnoma"
-}
-Agar muhim yangilik bo'lmasa, "signal": false qaytaring.
-"""
 
-def send_telegram_message(text):
+def fetch_news() -> list:
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "finance OR gold OR forex OR market",
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 5,
+        "apiKey": NEWS_API_KEY,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("articles", [])
+    except Exception as e:
+        print(f"Yangilik olishda xato: {e}")
+        return []
+
+
+def analyze_news(title: str, description: str) -> str:
+    prompt = (
+        "Quyidagi moliyaviy yangilikni tahlil qilib, o'zbek tilida qisqa va aniq "
+        "xulosa bering (qaysi bozor/aktivga ta'sir qilishi va asosiy mazmuni):\n"
+        f"Sarlavha: {title}\n"
+        f"Tavsif: {description or ''}"
+    )
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return (response.text or "").strip()
+    except Exception as e:
+        print(f"Gemini tahlilida xato: {e}")
+        return ""
+
+
+def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=15)
+        response.raise_for_status()
     except Exception as e:
-        print(f"Telegram хатоси: {e}")
+        print(f"Telegram yuborishda xato: {e}")
 
-def analyze_news(news_text):
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
-            contents=f"{SYSTEM_PROMPT}\n\nYangilik: {news_text}"
-        )
-        return response.text
-    except Exception as e:
-        print(f"Gemini xatosi: {e}")
-        return None
 
-def fetch_and_check_news():
-    url = f"https://newsapi.org/v2/everything?q=gold+forex+EURUSD&language=en&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
-    try:
-        res = requests.get(url, timeout=10)
-        data = res.json()
-        articles = data.get("articles", [])
-        
-        for article in articles[:3]:
-            news_url = article.get("url")
-            if news_url and news_url not in processed_urls:
-                processed_urls.add(news_url)
-                title = article.get("title", "")
-                description = article.get("description", "")
-                content_text = f"{title}. {description}"
-                
-                print(f"Текширилаётган янгилик: {title}")
-                ai_response = analyze_news(content_text)
-                
-                if ai_response:
-                    print(f"Gemini жавоби: {ai_response}")
-                    if "true" in ai_response.lower() and "signal" in ai_response.lower():
-                        send_telegram_message(f"🚨 **Янги Савдо Сигнали!**\n\n{ai_response}")
-    except Exception as e:
-        print(f"Yangiliklarni olishda xatolik: {e}")
+def main_loop():
+    print("Moliya bot muvaffaqiyatli ishga tushdi!")
+    while True:
+        try:
+            articles = fetch_news()
+            new_count = 0
+            for article in articles:
+                article_url = article.get("url")
+                if not article_url or article_url in processed_urls:
+                    continue
+
+                processed_urls.add(article_url)
+                title = article.get("title") or "Yangilik"
+                description = article.get("description") or ""
+
+                analysis = analyze_news(title, description)
+                if analysis:
+                    message = f"📊 Yangilik: {title}\n\n{analysis}\n\n🔗 {article_url}"
+                    send_telegram_message(message)
+                    new_count += 1
+                    time.sleep(2)
+
+            if new_count == 0:
+                print("Yangi moliyaviy xabarlar topilmadi, kutilmoqda...")
+        except Exception as e:
+            print(f"Asosiy siklda xato: {e}")
+
+        time.sleep(300)
+
 
 if __name__ == "__main__":
-    print("Agent muvaffaqiyatli ishga tushdi va bozorlarni kuzatmoqda...")
-    send_telegram_message("🤖 Savdo agenti ishga tushdi va XAU/USD ҳамда EUR/USD янгиликларини кузатмоқда!")
-    
-    while True:
-        fetch_and_check_news()
-        time.sleep(300)
+    main_loop()
