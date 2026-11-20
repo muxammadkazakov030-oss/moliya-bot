@@ -83,11 +83,17 @@ def analyze_news(title: str, description: str) -> str:
         return ""
 
     prompt = (
-        "Sen moliyaviy bozorlar (oltin, valyuta, aksiyalar, makroiqtisodiyot) bo'yicha tahlilchisan.\n"
+        "Sen moliyaviy bozorlar (XAU/USD, EUR/USD, Nasdaq, oltin, aksiyalar, makroiqtisodiyot) bo'yicha tahlilchisan.\n"
         "Quyidagi yangilikni qisqa, aniq va tushunarli qilib O'ZBEK TILIDA tahlil qil:\n"
         "1. Yangilikning qisqa mazmuni (1-2 gap).\n"
-        "2. Bozorlarga ehtimoliy ta'siri (Oltin / USD / Aksiyalar: ijobiy, salbiy yoki neytral).\n"
-        "3. Qisqa xulosa (faqat axborot maqsadida, moliyaviy maslahat emas).\n\n"
+        "2. Bozorlarga ehtimoliy ta'siri (Oltin/XAU/USD, EUR/USD, Nasdaq/Aksiyalar: ijobiy, salbiy yoki neytral).\n"
+        "3. Taxminiy/ehtimoliy savdo mo'ljali (agar yangilik bozor uchun yetarlicha aniq signal bersa):\n"
+        "   - Aktiv (masalan: XAU/USD, EUR/USD yoki Nasdaq) va yo'nalish (Buy/Sell yoki Kuzatuv);\n"
+        "   - Taxminiy Entry (faqat yangilik va umumiy bozor kontekstiga tayangan mo'ljal zona/daraja);\n"
+        "   - Taxminiy SL (Stop Loss mo'ljali);\n"
+        "   - Taxminiy TP (Take Profit mo'ljali).\n"
+        "   Agar yangilik noaniq yoki zaif ta'sirli bo'lsa, aniq kirish nuqtasi majburiy emas — shunchaki 'Aniq signal darajasida emas, kuzatuv tavsiya etiladi' deb yoz.\n"
+        "4. Ogohlantirish: albatta 'moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali' deb qayd et.\n\n"
         f"Sarlavha: {title or 'Noma’lum'}\n"
         f"Tavsif: {description or 'Tavsif mavjud emas'}"
     )
