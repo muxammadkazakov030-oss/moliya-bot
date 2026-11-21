@@ -69,28 +69,32 @@ HIGH_IMPACT_KEYWORDS = (
     "s&p 500", "dxy", "dollar index", "crude oil", "wti", "opec"
 )
 
+# Реал бозор нархларини олиш учун тикерлар харитаси
+MARKET_SYMBOLS = {
+    "XAU/USD (Oltin)": ("GC=F", 2),
+    "EUR/USD": ("EURUSD=X", 5),
+    "USD/JPY": ("JPY=X", 3),
+    "Nasdaq (US100)": ("NQ=F", 2),
+    "WTI Oil": ("CL=F", 2),
+}
+
 
 def get_uz_now() -> datetime:
     return datetime.now(UZ_TZ)
 
 
 def get_schedule_info(now_uz: datetime):
-    """
-    12:00 - 00:30 оралиғида фаол ишлайди.
-    16:00 - 20:30 ва 21:30 - 00:30 (АҚШ/High-Impact соатлар) да тезроқ текширади.
-    00:30 - 12:00 оралиғида Gemini лимитини сақлаш учун кутиш режимига ўтади.
-    """
     minutes = now_uz.hour * 60 + now_uz.minute
 
-    # 00:30 (30 дақиқа) дан 12:00 (720 дақиқа) гача -> Тунги/эрта тонги сокин режим
+    # 00:30 дан 12:00 гача -> Тунги/тонги сокин режим (лимит тежалади)
     if 30 <= minutes < 720:
         return False, 1800, "Тунги/тонги сокин режим (12:00 гача Gemini лимити тежалади)"
 
-    # 16:00 - 20:30 (960 - 1230) ёки 21:30 - 00:30 (1290 - 1440 ёки < 30) -> Энг юқори фаоллик
+    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / High-Impact юқори фаоллик соатлари
     if (960 <= minutes <= 1230) or (minutes >= 1290) or (minutes < 30):
         return True, 600, "Юқори фаоллик (АҚШ / High-Impact релизлар соати — ҳар 10 дақиқада)"
 
-    # Қолган 12:00 - 16:00 ва 20:30 - 21:30 оралиғи -> Ўртача фаоллик (Европа сессияси)
+    # 12:00 - 16:00 ва 20:30 - 21:30 -> Европа сессияси фаол режими
     return True, 900, "Фаол режим (Европа/бозор соатлари — ҳар 15 дақиқада)"
 
 
@@ -113,6 +117,32 @@ def register_gemini_call(now_uz: datetime):
 def is_high_impact_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
     return any(kw in combined for kw in HIGH_IMPACT_KEYWORDS)
+
+
+def fetch_live_prices() -> str:
+    """
+    Yahoo Finance орқали асосий 5 та паранинг жорий реал нархини олади.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    lines = []
+
+    for label, (symbol, decimals) in MARKET_SYMBOLS.items():
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            meta = data["chart"]["result"][0]["meta"]
+            price = meta.get("regularMarketPrice")
+            if price is not None:
+                lines.append(f"- {label}: {round(float(price), decimals)}")
+            else:
+                lines.append(f"- {label}: Noma'lum")
+        except Exception as e:
+            log(f"Нарх олишда хато ({label}): {e}")
+            lines.append(f"- {label}: Noma'lum")
+
+    return "\n".join(lines)
 
 
 def fetch_financial_news():
@@ -142,26 +172,30 @@ def fetch_financial_news():
         return []
 
 
-def analyze_news(title: str, description: str) -> str:
+def analyze_news(title: str, description: str, live_prices_text: str) -> str:
     if not client:
         log("GEMINI_API_KEY sozlanmagan.")
         return ""
 
     prompt = (
-        "Sen professional fundamental va texnik bozor tahlilchisisisan. Asosiy kuzatuv aktivlaring: "
-        "XAU/USD (Oltin), EUR/USD, USD/JPY, Nasdaq (US100), DXY va WTI Oil.\n"
-        "Quyidagi yangilikni Forex Factory / FXStreet high-impact kalendar mantiqi asosida O'ZBEK TILIDA qisqa va aniq tahlil qil:\n"
-        "1. Yangilik mazmuni va ahamiyati (1-2 gap; bu yangilik high-impact darajadami yoki o'rtacha).\n"
-        "2. Bozorlarga ta'siri (XAU/USD, EUR/USD, USD/JPY, Nasdaq, WTI Oil — qaysilariga ijobiy, salbiy yoki neytral).\n"
-        "3. Taxminiy/ehtimoliy savdo mo'ljali (faqat yangilik bozor uchun aniq impuls/signal bersa):\n"
-        "   - Asosiy aktiv va yo'nalish (Buy yoki Sell);\n"
-        "   - Taxminiy Entry (joriy bozor kontekstiga mos taxminiy kirish zonasi/darajasi);\n"
-        "   - Taxminiy SL (Stop Loss mo'ljali);\n"
-        "   - Taxminiy TP (Take Profit mo'ljali).\n"
-        "   Agar yangilik aniq savdo signali darajasida bo'lmasa: 'Aniq savdo signali darajasida emas, kuzatuv tavsiya etiladi' deb yoz.\n"
-        "4. Eslatma: oxirida albatta 'Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.' deb yoz.\n\n"
-        f"Sarlavha: {title or 'Noma’lum'}\n"
-        f"Tavsif: {description or 'Tavsif mavjud emas'}"
+        "Sen professional fundamental va texnik treyder-tahlilchisisisan.\n"
+        "Quyida yangilik va bozorning JORIY REAL NARXLARI berilgan. Eski xotirangdagi narxlarni UMUMAN ishlatma — "
+        "faqat quyida berilgan JORIY REAL NARXLARGA asoslanib hisobla!\n\n"
+        f"JORIY BOZOR NARXLARI:\n{live_prices_text}\n\n"
+        f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
+        f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
+        "Tahlilni O'ZBEK TILIDA qisqa, aniq va tushunarli strukturada ber:\n"
+        "1. Yangilikning qisqa mazmuni (1-2 gap; High-Impact yoki o'rtacha).\n"
+        "2. Har bir para bo'yicha ALOHIDA izoh va savdo mo'ljali (XAU/USD, EUR/USD, USD/JPY, Nasdaq, WTI Oil):\n"
+        "   Har bir para uchun quyidagi formatda yoz:\n"
+        "   - Para nomi (Joriy narx: ...)\n"
+        "   - Ta'siri va izoh: (1-2 gapda yangilik bu paraga qanday va nima uchun ta'sir qilishini tushuntir)\n"
+        "   - Yo'nalish: Buy / Sell / Kuzatuv (agar yangilik bu paraga bevosita signal bermasa 'Kuzatuv' deb yoz)\n"
+        "   - Entry: (faqat yuqoridagi joriy narxga mos zona)\n"
+        "   - SL: (joriy narx va texnik mantiqqa mos Stop Loss)\n"
+        "   - TP: (joriy narx va texnik mantiqqa mos Take Profit)\n"
+        "   (Eslatma: agar biror paraning joriy narxi 'Noma'lum' bo'lsa, u para uchun raqamli narx yozma, faqat necha punktlik SL/TP mo'ljalini yoz.)\n"
+        "3. Oxirida majburiy eslatma: 'Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.'"
     )
 
     try:
@@ -225,7 +259,6 @@ def main_loop():
                     log("Кунлик сўров лимитига етилди, қолган мақолалар тўхтатилди.")
                     break
 
-                # Бир айланишда кўпи билан 2 та энг муҳим янгиликни таҳлил қилиш (лимитни тежаш учун)
                 if new_count >= 2:
                     break
 
@@ -241,9 +274,12 @@ def main_loop():
                     log(f"Ўтказиб юборилди (high-impact эмас): {title[:65]}...")
                     continue
 
-                log(f"High-Impact таҳлил қилинмоқда: {title[:75]}...")
+                log(f"Реал нархлар олинмоқда ва таҳлил қилинмоқда: {title[:70]}...")
+                live_prices_text = fetch_live_prices()
+                log(f"Олинган жорий нархлар:\n{live_prices_text}")
+
                 register_gemini_call(get_uz_now())
-                analysis = analyze_news(title, description)
+                analysis = analyze_news(title, description, live_prices_text)
 
                 if analysis:
                     message = (
