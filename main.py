@@ -69,13 +69,13 @@ HIGH_IMPACT_KEYWORDS = (
     "s&p 500", "dxy", "dollar index", "crude oil", "wti", "opec"
 )
 
-# Реал бозор нархларини олиш учун тикерлар харитаси
+# MT5 спот котировкаларига максимал мос тикерлар ва захира тикерлар
 MARKET_SYMBOLS = {
-    "XAU/USD (Oltin)": ("GC=F", 2),
-    "EUR/USD": ("EURUSD=X", 5),
-    "USD/JPY": ("JPY=X", 3),
-    "Nasdaq (US100)": ("NQ=F", 2),
-    "WTI Oil": ("CL=F", 2),
+    "XAU/USD (Oltin)": (["XAUUSD=X", "GC=F"], 2),
+    "EUR/USD": (["EURUSD=X"], 5),
+    "USD/JPY": (["JPY=X"], 3),
+    "Nasdaq (US100)": (["NQ=F", "^NDX"], 2),
+    "WTI Oil": (["CL=F", "USO"], 2),
 }
 
 
@@ -119,27 +119,43 @@ def is_high_impact_article(title: str, description: str) -> bool:
     return any(kw in combined for kw in HIGH_IMPACT_KEYWORDS)
 
 
+def fetch_single_symbol_price(symbol: str):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    meta = data["chart"]["result"][0]["meta"]
+    price = meta.get("regularMarketPrice")
+    if price is None:
+        raise ValueError(f"Narx topilmadi: {symbol}")
+    return float(price)
+
+
 def fetch_live_prices() -> str:
     """
-    Yahoo Finance орқали асосий 5 та паранинг жорий реал нархини олади.
+    MT5 спот котировкаларига яқин реал бозор нархларини олади;
+    асосий тикер жавоб бермаса, захира тикерни синаб кўради.
     """
-    headers = {"User-Agent": "Mozilla/5.0"}
     lines = []
 
-    for label, (symbol, decimals) in MARKET_SYMBOLS.items():
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
-            resp = requests.get(url, headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            meta = data["chart"]["result"][0]["meta"]
-            price = meta.get("regularMarketPrice")
-            if price is not None:
-                lines.append(f"- {label}: {round(float(price), decimals)}")
-            else:
-                lines.append(f"- {label}: Noma'lum")
-        except Exception as e:
-            log(f"Нарх олишда хато ({label}): {e}")
+    for label, (candidates, decimals) in MARKET_SYMBOLS.items():
+        fetched_price = None
+        used_symbol = None
+
+        for sym in candidates:
+            try:
+                val = fetch_single_symbol_price(sym)
+                if val > 0:
+                    fetched_price = round(val, decimals)
+                    used_symbol = sym
+                    break
+            except Exception as e:
+                log(f"Нарх олишда хато ({label} / {sym}): {e}")
+
+        if fetched_price is not None:
+            lines.append(f"- {label} [{used_symbol}]: {fetched_price}")
+        else:
             lines.append(f"- {label}: Noma'lum")
 
     return "\n".join(lines)
@@ -179,8 +195,8 @@ def analyze_news(title: str, description: str, live_prices_text: str) -> str:
 
     prompt = (
         "Sen professional fundamental va texnik treyder-tahlilchisisisan.\n"
-        "Quyida yangilik va bozorning JORIY REAL NARXLARI berilgan. Eski xotirangdagi narxlarni UMUMAN ishlatma — "
-        "faqat quyida berilgan JORIY REAL NARXLARGA asoslanib hisobla!\n\n"
+        "Quyida yangilik va bozorning JORIY REAL NARXLARI (MT5 spot ko'rsatkichlariga yaqin) berilgan. "
+        "Eski xotirangdagi narxlarni UMUMAN ishlatma — faqat quyida berilgan JORIY REAL NARXLARGA asoslanib hisobla!\n\n"
         f"JORIY BOZOR NARXLARI:\n{live_prices_text}\n\n"
         f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
         f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
