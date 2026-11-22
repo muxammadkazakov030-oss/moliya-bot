@@ -214,15 +214,26 @@ def analyze_news(title: str, description: str, live_prices_text: str) -> str:
         "3. Oxirida majburiy eslatma: 'Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.'"
     )
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-        )
-        return (response.text or "").strip()
-    except Exception as e:
-        log(f"Gemini tahlilida xato: {e}")
-        return ""
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+            )
+            return (response.text or "").strip()
+        except Exception as e:
+            err_str = str(e)
+            log(f"Gemini tahlilida xato (urinish {attempt}/{max_attempts}): {err_str}")
+            is_retryable = ("503" in err_str) or ("UNAVAILABLE" in err_str) or ("500" in err_str)
+            if is_retryable and attempt < max_attempts:
+                wait_sec = attempt * 3
+                log(f"Vaqtinchalik yuklama sabab {wait_sec} soniyadan so'ng qayta uriniladi...")
+                time.sleep(wait_sec)
+            else:
+                break
+
+    return ""
 
 
 def send_telegram_message(text: str) -> bool:
