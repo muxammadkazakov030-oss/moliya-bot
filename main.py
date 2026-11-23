@@ -19,7 +19,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Moliya Bot (Fundamental + Technical) is running!".encode("utf-8"))
+        self.wfile.write("Moliya Bot is running!".encode("utf-8"))
 
     def log_message(self, format, *args):
         return
@@ -52,7 +52,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 MODEL_NAME = "gemini-2.5-flash"
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
-MAX_DAILY_GEMINI_CALLS = 18           # Free Tier лимитдан ошмаслик учун
+MAX_DAILY_GEMINI_CALLS = 18           # Кунлик сўров лимити
 FXSTREET_RSS_URL = "https://www.fxstreet.com/rss/news"
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -80,7 +80,7 @@ MARKET_IMPACT_KEYWORDS = (
     "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
 )
 
-# Фақат маҳаллий заргарлик дўконлари чакана нархлари ва крипто шовқинини блоклаш
+# Локал заргарлик дўконлари ва крипто шовқинини блоклаш
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
@@ -95,9 +95,9 @@ MACRO_OVERRIDE_KEYWORDS = (
     "import duty", "customs duty", "gold reserves", "sovereign", "tariff", "opec", "dxy"
 )
 
-# MT5 спот котировкаларига максимал мос 6 та актив
+# 6 та асосий актив (MT5 спот котировкаларига максимал мос)
 MARKET_SYMBOLS = {
-    "XAU/USD": (["XAUUSD=X", "GC=F"], 2),
+    "XAU/USD (Oltin)": (["XAUUSD=X", "GC=F"], 2),
     "GBP/USD": (["GBPUSD=X"], 5),
     "USD/JPY": (["JPY=X"], 3),
     "USD/CAD": (["CAD=X"], 5),
@@ -192,10 +192,6 @@ def compute_rsi(prices: list, period: int = 14) -> float:
 
 
 def fetch_technical_snapshot(symbol: str, decimals: int) -> dict:
-    """
-    Yahoo Finance'дан 1 соатлик (5 кунлик) свечаларни олиб,
-    жорий нарх, EMA-20, RSI-14 ва кунлик Support/Resistance даражаларини ҳисоблайди.
-    """
     headers = {"User-Agent": "Mozilla/5.0"}
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1h&range=5d"
     resp = requests.get(url, headers=headers, timeout=12)
@@ -219,25 +215,16 @@ def fetch_technical_snapshot(symbol: str, decimals: int) -> dict:
     current_price = round(float(current_price), decimals)
     ema20 = round(compute_ema(closes[-40:], 20), decimals) if closes else current_price
     rsi14 = round(compute_rsi(closes[-30:], 14), 1) if closes else 50.0
-
-    # Охирги 24 соатлик (24 та 1H свеча) Support ва Resistance
     recent_high = round(max(highs[-24:]), decimals) if highs else current_price
     recent_low = round(min(lows[-24:]), decimals) if lows else current_price
 
-    trend = "Юқорига (Bullish)" if current_price > ema20 else "Пастга (Bearish)"
-    if rsi14 >= 70:
-        rsi_state = "Overbought (Ҳаддан ташқари сотиб олинган)"
-    elif rsi14 <= 30:
-        rsi_state = "Oversold (Ҳаддан ташқари сотилган)"
-    else:
-        rsi_state = "Нейтрал"
+    trend = "Bullish" if current_price > ema20 else "Bearish"
 
     return {
         "symbol": symbol,
         "price": current_price,
         "ema20": ema20,
         "rsi14": rsi14,
-        "rsi_state": rsi_state,
         "trend": trend,
         "resistance_24h": recent_high,
         "support_24h": recent_low,
@@ -245,9 +232,6 @@ def fetch_technical_snapshot(symbol: str, decimals: int) -> dict:
 
 
 def fetch_all_market_data() -> str:
-    """
-    Барча 6 та актив учун жонли нарх ва H1 техник кўрсаткичларни йиғади.
-    """
     blocks = []
     for label, (candidates, decimals) in MARKET_SYMBOLS.items():
         snap = None
@@ -260,14 +244,13 @@ def fetch_all_market_data() -> str:
 
         if snap:
             blocks.append(
-                f"• {label} [{snap['symbol']}]:\n"
-                f"  - Жорий нарх: {snap['price']}\n"
-                f"  - H1 Тренд (EMA-20: {snap['ema20']}): {snap['trend']}\n"
-                f"  - H1 RSI(14): {snap['rsi14']} ({snap['rsi_state']})\n"
-                f"  - 24H Support: {snap['support_24h']} | 24H Resistance: {snap['resistance_24h']}"
+                f"- {label} [{snap['symbol']}]: Joriy narx={snap['price']} | "
+                f"EMA-20={snap['ema20']} ({snap['trend']}) | "
+                f"RSI(14)={snap['rsi14']} | "
+                f"Support={snap['support_24h']} | Resistance={snap['resistance_24h']}"
             )
         else:
-            blocks.append(f"• {label}: Маълумот вақтинча номаълум")
+            blocks.append(f"- {label}: Noma'lum")
 
     return "\n".join(blocks)
 
@@ -292,7 +275,6 @@ def fetch_fxstreet_rss():
                     "title": title,
                     "description": desc,
                     "url": link,
-                    "source_tag": "FXStreet Live",
                 })
         log(f"FXStreet RSS'дан {len(articles)} та мақола олинди.")
     except Exception as e:
@@ -328,7 +310,6 @@ def fetch_newsapi_articles():
                     "title": art.get("title", "").strip(),
                     "description": clean_html_tags(art.get("description") or ""),
                     "url": art.get("url", "").strip(),
-                    "source_tag": "Global Macro",
                 })
         log(f"NewsAPI'дан {len(articles)} та мақола олинди.")
     except Exception as e:
@@ -340,34 +321,33 @@ def fetch_combined_news():
     return fetch_fxstreet_rss() + fetch_newsapi_articles()
 
 
-# --- 5. Gemini орқали Фундаментал + Техник таҳлил ---
+# --- 5. Gemini орқали Фундаментал + Техник таҳлил (айнан сиз сўраган кўринишда) ---
 def analyze_news(title: str, description: str, market_data_text: str) -> str:
     if not client:
         log("GEMINI_API_KEY sozlanmagan.")
         return ""
 
     prompt = (
-        "Sen yuqori aniqlikdagi professional fundamental va texnik treyder-tahlilchisisisan.\n"
-        "Quyida so'nggi iqtisodiy yangilik hamda 6 ta aktivning JORIY REAL NARXLARI va H1 TEXNIK INDIKATORLARI (EMA-20, RSI-14, 24H Support/Resistance) berilgan.\n"
-        "Eski xotirangdagi narxlarni UMUMAN ishlatma — faqat quyidagi real ma'lumotlarga tayan!\n\n"
-        f"BOZORNING JORIY TEXNIK XARITASI:\n{market_data_text}\n\n"
-        f"YANGILIK SARLAVHASI: {title}\n"
+        "Sen professional fundamental va texnik treyder-tahlilchisisisan.\n"
+        "Quyida yangilik va 6 ta aktivning JORIY REAL NARXLARI hamda H1 TEXNIK INDIKATORLARI (EMA-20, RSI-14, Support/Resistance) berilgan.\n"
+        "Faqat quyidagi real narxlar va texnik darajalarga asoslanib hisobla!\n\n"
+        f"JORIY BOZOR VA TEXNIK MA'LUMOTLAR:\n{market_data_text}\n\n"
+        f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
         f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
-        "VAZIFA: Fundamental yangilik va texnik indikatorlar (EMA-20, RSI-14, Support/Resistance) bir-birini tasdiqlagan holatlar uchun O'ZBEK TILIDA aniq, ravshan va qisqa savdo signallarini tuz.\n\n"
-        "CHIQISH FORMATI (faqat shu strukturada yoz):\n"
-        "📌 **Yangilik va ta'siri:** (1-2 gapda mohiyati va ta'sir kuchi: High-Impact / O'rtacha / Past)\n\n"
-        "🎯 **ANIQ SAVDO SIGNALLARI:**\n"
-        "(Faqat ushbu yangilik va texnik indikatorlar bo'yicha aniq 'BUY' yoki 'SELL' ehtimoli yuqori bo'lgan paralar uchun yoz! Agar biror paraga yangilikning aloqasi bo'lmasa yoki texnik holat qarama-qarshi bo'lsa, u parani umuman yozma!)\n\n"
-        "Har bir mos para uchun:\n"
-        "🔹 **[PARA NOMI]** — **BUY** (yoki **SELL**)\n"
-        "• Joriy narx: ...\n"
-        "• Sabab (Fundament + Texnika): (Masalan: DXY kuchsizlanmoqda, narx H1 EMA-20 dan yuqorida va RSI 58 — o'sish kuchi bor)\n"
-        "• Entry (Kirish): ...\n"
-        "• Stop Loss (SL): ... (Support/Resistance ortiga mantiqiy qo'y)\n"
-        "• Take Profit 1 (TP1): ...\n"
-        "• Take Profit 2 (TP2): ...\n\n"
-        "(Agar 6 ta paradan HECH BIRIDA aniq fundamental + texnik moslik bo'lmasa, faqatgina 'NO_SIGNAL' deb javob ber — boshqa hech narsa yozma!)\n\n"
-        "⚠️ Oxirida qisqa eslatma: _Ushbu signal tahliliy ma'lumot bo'lib, risk-menejment (SL) bilan foydalanish tavsiya etiladi._"
+        "Tahlilni O'ZBEK TILIDA quyidagi AYNAN SHU FORMATDA ber (boshqa qo'shimcha sarlavha yoki izoh qo'shma):\n\n"
+        "### 1. Yangilikning qisqa mazmuni\n"
+        "(1-2 gapda yangilik mohiyati va oxirida qavs ichida ta'sir darajasi: (**High-Impact**), (**O'rtacha**) yoki (**Past**)).\n\n"
+        "---\n\n"
+        "### 2. Bozor tahlili va savdo mo‘ljallari\n\n"
+        "Har bir aktiv uchun (XAU/USD (Oltin), GBP/USD, USD/JPY, USD/CAD, Nasdaq (US100), WTI Oil) quyidagi ko'rinishda yoz:\n\n"
+        "#### [Aktiv nomi] (Joriy narx: [joriy narx])\n"
+        "- **Ta'siri va izoh:** (Fundamental sabab + EMA-20, RSI va Support/Resistance texnik holatiga tayangan 1-2 gaplik aniq izoh)\n"
+        "- **Yo'nalish:** Buy, Sell yoki Kuzatuv\n"
+        "- **Entry:** (joriy narxga mos kirish oralig'i; agar Kuzatuv bo'lsa yozma)\n"
+        "- **SL:** (Support/Resistance ortiga qo'yilgan Stop Loss; agar Kuzatuv bo'lsa yozma)\n"
+        "- **TP:** (texnik maqsad Take Profit; agar Kuzatuv bo'lsa yozma)\n\n"
+        "---\n\n"
+        "*Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.*"
     )
 
     max_attempts = 3
@@ -401,16 +381,11 @@ def send_telegram_message(text: str) -> bool:
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
+        "disable_web_page_preview": False,
     }
 
     try:
         response = requests.post(url, json=payload, timeout=20)
-        if response.status_code != 200:
-            # Markdown хатоси бўлса, оддий текст сифатида қайта юбориш
-            payload.pop("parse_mode", None)
-            response = requests.post(url, json=payload, timeout=20)
         response.raise_for_status()
         return True
     except Exception as e:
@@ -418,31 +393,11 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 
-def send_startup_summary():
-    """
-    Бот ишга тушиши билан Telegram'га жонли техник ҳолат ва тайёрлик хабарини юборади.
-    """
-    now_str = get_uz_now().strftime("%H:%M")
-    try:
-        market_snapshot = fetch_all_market_data()
-        msg = (
-            f"✅ *Moliya Bot Yangilandi va Ishga Tushdi* ({now_str} UZ)\n\n"
-            f"📡 *Manbalar:* FXStreet Live RSS + Global Macro\n"
-            f"📐 *Texnik tahlil:* H1 EMA-20, RSI(14), 24H Support/Resistance\n\n"
-            f"📊 *Joriy Bozor Xaritasi:*\n{market_snapshot}\n\n"
-            f"🔔 Aniq fundamental + texnik signal shakllanishi bilan darhol xabar yuboriladi."
-        )
-        send_telegram_message(msg)
-    except Exception as e:
-        log(f"Startup хабар юборишда хато: {e}")
-
-
 def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
     log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Fundamental + Technical Mode")
-    send_startup_summary()
 
     while True:
         now_uz = get_uz_now()
@@ -459,7 +414,7 @@ def main_loop():
             time.sleep(1800)
             continue
 
-        sent_count = 0
+        new_count = 0
         try:
             articles = fetch_combined_news()
             log(f"Жами текширилаётган мақолалар сони: {len(articles)}")
@@ -469,7 +424,7 @@ def main_loop():
                     log("Кунлик сўров лимитига етилди.")
                     break
 
-                if sent_count >= 1:
+                if new_count >= 1:
                     break
 
                 article_url = article.get("url")
@@ -479,35 +434,31 @@ def main_loop():
                 processed_urls.add(article_url)
                 title = article.get("title") or "Sarlavhasiz yangilik"
                 description = article.get("description") or ""
-                source_tag = article.get("source_tag") or "Manba"
 
                 if not is_market_relevant_article(title, description):
                     log(f"Ўтказиб юборилди (шовқин/алоқасиз): {title[:60]}...")
                     continue
 
-                log(f"[{source_tag}] Техник харита олинмоқда ва таҳлил қилинмоқда: {title[:60]}...")
+                log(f"Фундаментал ва техник таҳлил тайёрланмоқда: {title[:60]}...")
                 market_data_text = fetch_all_market_data()
 
                 register_gemini_call(get_uz_now())
                 analysis = analyze_news(title, description, market_data_text)
 
-                if not analysis or "NO_SIGNAL" in analysis:
-                    log(f"Сигнал тасдиқланмади (NO_SIGNAL): {title[:60]}...")
-                    continue
+                if analysis:
+                    message = (
+                        f"📊 Fundamental Tahlil ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
+                        f"📰 {title}\n\n"
+                        f"{analysis}\n\n"
+                        f"🔗 Manba: {article_url}"
+                    )
+                    if send_telegram_message(message):
+                        new_count += 1
+                        log(f"Таҳлил юборилди. Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
+                    time.sleep(2)
 
-                message = (
-                    f"🚨 *SAVDO SIGNALI [{source_tag}]* ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
-                    f"📰 *{title}*\n\n"
-                    f"{analysis}\n\n"
-                    f"🔗 [Manbani o'qish]({article_url})"
-                )
-                if send_telegram_message(message):
-                    sent_count += 1
-                    log(f"Сигнал муваффақиятли юборилди! Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
-                time.sleep(2)
-
-            if sent_count == 0:
-                log("Ушбу айланишда янги тасдиқланган сигнал топилмади.")
+            if new_count == 0:
+                log("Ҳозирча янги глобал бозор хабари топилмади.")
 
         except Exception as e:
             log(f"Асосий циклда хато: {e}")
