@@ -60,22 +60,40 @@ daily_state = {
     "calls": 0,
 }
 
-# Муҳим макроиқтисодий ва молиявий бозор калит сўзлари
+# Муҳим макроиқтисодий ва глобал молиявий бозор калит сўзлари (GBP/USD ва USD/CAD қўшилган)
 MARKET_IMPACT_KEYWORDS = (
     "cpi", "inflation", "fomc", "fed", "federal reserve", "powell", "interest rate",
     "rate cut", "rate hike", "nfp", "non-farm", "nonfarm", "payroll", "unemployment",
-    "jobless", "gdp", "pmi", "retail sales", "pce", "ecb", "lagarde", "boj", "ueda",
-    "central bank", "treasury", "yield", "bond", "xau", "gold", "bullion",
-    "eur/usd", "eurusd", "euro", "usd/jpy", "usdjpy", "yen", "nasdaq", "us100",
+    "jobless", "gdp", "pmi", "retail sales", "pce", "boe", "bank of england", "bailey",
+    "boc", "bank of canada", "macklem", "boj", "ueda", "rbi", "pboc",
+    "central bank", "reserves", "import duty", "tariff", "sanctions",
+    "treasury", "yield", "bond", "xau", "gold", "bullion",
+    "gbp/usd", "gbpusd", "pound", "sterling", "usd/jpy", "usdjpy", "yen",
+    "usd/cad", "usdcad", "loonie", "canadian dollar", "nasdaq", "us100",
     "s&p 500", "wall street", "tech stocks", "dxy", "dollar", "greenback",
     "crude oil", "wti", "brent", "opec", "forex"
 )
 
-# MT5 спот котировкаларига максимал мос тикерлар ва захира тикерлар
+# Фақат маҳаллий заргарлик дўконлари ва шаҳарларнинг чакана тилла нархларини блоклаш
+LOCAL_RETAIL_NOISE_KEYWORDS = (
+    "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
+    "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
+    "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding"
+)
+
+# Йирик давлатларнинг глобал бозорга таъсир қилувчи макроиқтисодий истисно сўзлари
+MACRO_OVERRIDE_KEYWORDS = (
+    "central bank", "rbi", "reserve bank of india", "pboc", "fed", "boe", "boc", "boj",
+    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "gdp",
+    "import duty", "customs duty", "gold reserves", "sovereign", "tariff", "opec"
+)
+
+# MT5 спот котировкаларига максимал мос 6 та актив (EUR/USD ўрнига GBP/USD ва USD/CAD)
 MARKET_SYMBOLS = {
     "XAU/USD (Oltin)": (["XAUUSD=X", "GC=F"], 2),
-    "EUR/USD": (["EURUSD=X"], 5),
+    "GBP/USD": (["GBPUSD=X"], 5),
     "USD/JPY": (["JPY=X"], 3),
+    "USD/CAD": (["CAD=X"], 5),
     "Nasdaq (US100)": (["NQ=F", "^NDX"], 2),
     "WTI Oil": (["CL=F", "USO"], 2),
 }
@@ -92,12 +110,12 @@ def get_schedule_info(now_uz: datetime):
     if 30 <= minutes < 720:
         return False, 1800, "Тунги/тонги сокин режим (12:00 гача Gemini лимити тежалади)"
 
-    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / High-Impact юқори фаоллик соатлари
+    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / Канада / High-Impact юқори фаоллик соатлари
     if (960 <= minutes <= 1230) or (minutes >= 1290) or (minutes < 30):
-        return True, 600, "Юқори фаоллик (АҚШ / High-Impact релизлар соати — ҳар 10 дақиқада)"
+        return True, 600, "Юқори фаоллик (АҚШ / Канада / High-Impact соати — ҳар 10 дақиқада)"
 
-    # 12:00 - 16:00 ва 20:30 - 21:30 -> Европа сессияси фаол режими
-    return True, 900, "Фаол режим (Европа/бозор соатлари — ҳар 15 дақиқада)"
+    # 12:00 - 16:00 ва 20:30 - 21:30 -> Лондон / Европа сессияси фаол режими
+    return True, 900, "Фаол режим (Лондон/бозор соатлари — ҳар 15 дақиқада)"
 
 
 def can_call_gemini(now_uz: datetime) -> bool:
@@ -118,6 +136,14 @@ def register_gemini_call(now_uz: datetime):
 
 def is_market_relevant_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
+
+    # Йирик давлатлар ва марказий банкларнинг глобал макро хабарлари истисно тариқасида ўтади
+    has_macro_override = any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS)
+
+    # Локал заргарлик дўконлари чакана нархлари блокланади
+    if not has_macro_override and any(noise in combined for noise in LOCAL_RETAIL_NOISE_KEYWORDS):
+        return False
+
     return any(kw in combined for kw in MARKET_IMPACT_KEYWORDS)
 
 
@@ -171,8 +197,8 @@ def fetch_financial_news():
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": (
-            '("gold price" OR XAU OR "EUR/USD" OR "USD/JPY" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
-            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR "interest rate" OR ECB OR BoJ OR "treasury yields")'
+            '("gold price" OR XAU OR "GBP/USD" OR "USD/JPY" OR "USD/CAD" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
+            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR "interest rate" OR BoE OR BoC OR BoJ OR RBI OR PBOC OR "treasury yields")'
         ),
         "language": "en",
         "sortBy": "publishedAt",
@@ -203,16 +229,20 @@ def analyze_news(title: str, description: str, live_prices_text: str) -> str:
         f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
         f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
         "Tahlilni O'ZBEK TILIDA qisqa, aniq va tushunarli strukturada ber:\n"
-        "1. Yangilikning qisqa mazmuni (1-2 gap; High-Impact yoki o'rtacha).\n"
-        "2. Har bir para bo'yicha ALOHIDA izoh va savdo mo'ljali (XAU/USD, EUR/USD, USD/JPY, Nasdaq, WTI Oil):\n"
-        "   Har bir para uchun quyidagi formatda yoz:\n"
-        "   - Para nomi (Joriy narx: ...)\n"
-        "   - Ta'siri va izoh: (1-2 gapda yangilik bu paraga qanday va nima uchun ta'sir qilishini tushuntir)\n"
-        "   - Yo'nalish: Buy / Sell / Kuzatuv (agar yangilik bu paraga bevosita signal bermasa 'Kuzatuv' deb yoz)\n"
-        "   - Entry: (faqat yuqoridagi joriy narxga mos zona)\n"
-        "   - SL: (joriy narx va texnik mantiqqa mos Stop Loss)\n"
-        "   - TP: (joriy narx va texnik mantiqqa mos Take Profit)\n"
-        "   (Eslatma: agar biror paraning joriy narxi 'Noma'lum' bo'lsa, u para uchun raqamli narx yozma, faqat necha punktlik SL/TP mo'ljalini yoz.)\n"
+        "1. Yangilikning qisqa mazmuni (1-2 gap; ta'sir darajasi: High-Impact, O'rtacha yoki Past).\n"
+        "2. Har bir para bo'yicha ALOHIDA izoh va savdo mo'ljali (XAU/USD, GBP/USD, USD/JPY, USD/CAD, Nasdaq, WTI Oil):\n"
+        "   - Agar yangilik paraga ANIQ fundamental ta'sir qilsa:\n"
+        "     * Para nomi (Joriy narx: ...)\n"
+        "     * Ta'siri va izoh: (1-2 gapda aniq sababini yoz)\n"
+        "     * Yo'nalish: Buy yoki Sell\n"
+        "     * Entry: (faqat yuqoridagi joriy narxga mos zona)\n"
+        "     * SL: (joriy narx va texnik mantiqqa mos Stop Loss)\n"
+        "     * TP: (joriy narx va texnik mantiqqa mos Take Profit)\n"
+        "   - Agar yangilik paraga bevosita ta'sir qilmasa:\n"
+        "     * Para nomi (Joriy narx: ...)\n"
+        "     * Ta'siri va izoh: (qisqa 1 gap sabab)\n"
+        "     * Yo'nalish: Kuzatuv (bu holatda Entry, SL, TP yozma!)\n"
+        "   (Eslatma: agar biror paraning joriy narxi 'Noma'lum' bo'lsa, u para uchun raqamli narx yozma.)\n"
         "3. Oxirida majburiy eslatma: 'Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.'"
     )
 
@@ -300,7 +330,7 @@ def main_loop():
                 description = article.get("description") or ""
 
                 if not is_market_relevant_article(title, description):
-                    log(f"Ўтказиб юборилди (бозорга оид эмас): {title[:65]}...")
+                    log(f"Ўтказиб юборилди (локал/бозорга таъсирсиз): {title[:65]}...")
                     continue
 
                 log(f"Реал нархлар олинмоқда ва таҳлил қилинмоқда: {title[:70]}...")
@@ -322,7 +352,7 @@ def main_loop():
                     time.sleep(2)
 
             if new_count == 0:
-                log("Ҳозирча янги бозор хабари топилмади.")
+                log("Ҳозирча янги глобал бозор хабари топилмади.")
             else:
                 log(f"Жами {new_count} та таҳлил юборилди. Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
 
