@@ -60,13 +60,15 @@ daily_state = {
     "calls": 0,
 }
 
-# Forex Factory / FXStreet "қизил" (High-Impact) календарь ва асосий активлар калит сўзлари
-HIGH_IMPACT_KEYWORDS = (
-    "cpi", "inflation", "fomc", "fed", "powell", "interest rate", "rate cut", "rate hike",
-    "nfp", "non-farm", "nonfarm", "payroll", "unemployment", "jobless", "gdp", "pmi",
-    "retail sales", "pce", "ecb", "lagarde", "boj", "ueda", "treasury", "yield",
-    "xau", "gold", "eur/usd", "eurusd", "usd/jpy", "usdjpy", "nasdaq", "us100",
-    "s&p 500", "dxy", "dollar index", "crude oil", "wti", "opec"
+# Муҳим макроиқтисодий ва молиявий бозор калит сўзлари
+MARKET_IMPACT_KEYWORDS = (
+    "cpi", "inflation", "fomc", "fed", "federal reserve", "powell", "interest rate",
+    "rate cut", "rate hike", "nfp", "non-farm", "nonfarm", "payroll", "unemployment",
+    "jobless", "gdp", "pmi", "retail sales", "pce", "ecb", "lagarde", "boj", "ueda",
+    "central bank", "treasury", "yield", "bond", "xau", "gold", "bullion",
+    "eur/usd", "eurusd", "euro", "usd/jpy", "usdjpy", "yen", "nasdaq", "us100",
+    "s&p 500", "wall street", "tech stocks", "dxy", "dollar", "greenback",
+    "crude oil", "wti", "brent", "opec", "forex"
 )
 
 # MT5 спот котировкаларига максимал мос тикерлар ва захира тикерлар
@@ -114,9 +116,9 @@ def register_gemini_call(now_uz: datetime):
     daily_state["calls"] += 1
 
 
-def is_high_impact_article(title: str, description: str) -> bool:
+def is_market_relevant_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
-    return any(kw in combined for kw in HIGH_IMPACT_KEYWORDS)
+    return any(kw in combined for kw in MARKET_IMPACT_KEYWORDS)
 
 
 def fetch_single_symbol_price(symbol: str):
@@ -169,12 +171,12 @@ def fetch_financial_news():
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": (
-            '(XAU OR gold OR "EUR/USD" OR "USD/JPY" OR Nasdaq OR DXY OR "crude oil") '
-            'AND (Fed OR FOMC OR CPI OR inflation OR NFP OR "interest rate" OR GDP OR PMI OR ECB OR BoJ)'
+            '("gold price" OR XAU OR "EUR/USD" OR "USD/JPY" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
+            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR "interest rate" OR ECB OR BoJ OR "treasury yields")'
         ),
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 6,
+        "pageSize": 8,
         "apiKey": NEWS_API_KEY,
     }
 
@@ -286,7 +288,7 @@ def main_loop():
                     log("Кунлик сўров лимитига етилди, қолган мақолалар тўхтатилди.")
                     break
 
-                if new_count >= 2:
+                if new_count >= 1:
                     break
 
                 article_url = article.get("url")
@@ -297,8 +299,8 @@ def main_loop():
                 title = article.get("title") or "Sarlavhasiz yangilik"
                 description = article.get("description") or ""
 
-                if not is_high_impact_article(title, description):
-                    log(f"Ўтказиб юборилди (high-impact эмас): {title[:65]}...")
+                if not is_market_relevant_article(title, description):
+                    log(f"Ўтказиб юборилди (бозорга оид эмас): {title[:65]}...")
                     continue
 
                 log(f"Реал нархлар олинмоқда ва таҳлил қилинмоқда: {title[:70]}...")
@@ -320,7 +322,7 @@ def main_loop():
                     time.sleep(2)
 
             if new_count == 0:
-                log("Ҳозирча янги high-impact хабар топилмади.")
+                log("Ҳозирча янги бозор хабари топилмади.")
             else:
                 log(f"Жами {new_count} та таҳлил юборилди. Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
 
