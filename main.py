@@ -1,6 +1,8 @@
 import os
+import re
 import time
 import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -51,6 +53,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MODEL_NAME = "gemini-3.8-flash"
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
 MAX_DAILY_GEMINI_CALLS = 18           # Free Tier 20 талик лимитдан ошмаслик учун
+FXSTREET_RSS_URL = "https://www.fxstreet.com/rss/news"
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 processed_urls = set()
@@ -60,17 +63,20 @@ daily_state = {
     "calls": 0,
 }
 
-# Муҳим макроиқтисодий ва глобал молиявий бозор калит сўзлари (GBP/USD ва USD/CAD қўшилган)
+# Муҳим макроиқтисодий ва глобал молиявий бозор калит сўзлари (PMI, DXY, GBP/USD, USD/CAD қўшилган)
 MARKET_IMPACT_KEYWORDS = (
     "cpi", "inflation", "fomc", "fed", "federal reserve", "powell", "interest rate",
     "rate cut", "rate hike", "nfp", "non-farm", "nonfarm", "payroll", "unemployment",
-    "jobless", "gdp", "pmi", "retail sales", "pce", "boe", "bank of england", "bailey",
+    "jobless", "gdp", "pmi", "business activity", "manufacturing", "services",
+    "retail sales", "pce", "boe", "bank of england", "bailey",
     "boc", "bank of canada", "macklem", "boj", "ueda", "rbi", "pboc",
     "central bank", "reserves", "import duty", "tariff", "sanctions",
     "treasury", "yield", "bond", "xau", "gold", "bullion",
-    "gbp/usd", "gbpusd", "pound", "sterling", "usd/jpy", "usdjpy", "yen",
-    "usd/cad", "usdcad", "loonie", "canadian dollar", "nasdaq", "us100",
-    "s&p 500", "wall street", "tech stocks", "dxy", "dollar", "greenback",
+    "gbp/usd", "gbpusd", "pound", "sterling", "uk ", "britain",
+    "usd/jpy", "usdjpy", "yen", "japan",
+    "usd/cad", "usdcad", "loonie", "canadian dollar", "canada",
+    "nasdaq", "us100", "s&p 500", "wall street", "tech stocks", "ai bubble",
+    "dxy", "dollar index", "dollar", "greenback",
     "crude oil", "wti", "brent", "opec", "forex"
 )
 
@@ -78,17 +84,18 @@ MARKET_IMPACT_KEYWORDS = (
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
-    "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding"
+    "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding",
+    "price forecast:", "technical analysis:", "weekly outlook"
 )
 
 # Йирик давлатларнинг глобал бозорга таъсир қилувчи макроиқтисодий истисно сўзлари
 MACRO_OVERRIDE_KEYWORDS = (
     "central bank", "rbi", "reserve bank of india", "pboc", "fed", "boe", "boc", "boj",
-    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "gdp",
-    "import duty", "customs duty", "gold reserves", "sovereign", "tariff", "opec"
+    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "gdp", "pmi",
+    "import duty", "customs duty", "gold reserves", "sovereign", "tariff", "opec", "dxy"
 )
 
-# MT5 спот котировкаларига максимал мос 6 та актив (EUR/USD ўрнига GBP/USD ва USD/CAD)
+# MT5 спот котировкаларига максимал мос 6 та актив
 MARKET_SYMBOLS = {
     "XAU/USD (Oltin)": (["XAUUSD=X", "GC=F"], 2),
     "GBP/USD": (["GBPUSD=X"], 5),
@@ -134,13 +141,20 @@ def register_gemini_call(now_uz: datetime):
     daily_state["calls"] += 1
 
 
+def clean_html_tags(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", raw_text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def is_market_relevant_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
 
-    # Йирик давлатлар ва марказий банкларнинг глобал макро хабарлари истисно тариқасида ўтади
+    # Йирик давлатлар, марказий банклар, PMI ва DXY каби глобал макро хабарлар истисно тариқасида ўтади
     has_macro_override = any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS)
 
-    # Локал заргарлик дўконлари чакана нархлари блокланади
+    # Локал заргарлик дўконлари ва оддий муаллифлик прогнозлари блокланади
     if not has_macro_override and any(noise in combined for noise in LOCAL_RETAIL_NOISE_KEYWORDS):
         return False
 
@@ -189,31 +203,77 @@ def fetch_live_prices() -> str:
     return "\n".join(lines)
 
 
-def fetch_financial_news():
+def fetch_fxstreet_rss():
+    """
+    FXStreet расмий RSS лентасидан кечикишсиз тезкор макро-янгиликларни олади.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; MoliyaBot/1.0)"}
+    articles = []
+    try:
+        resp = requests.get(FXSTREET_RSS_URL, headers=headers, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for item in root.findall(".//item")[:8]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            desc = clean_html_tags(item.findtext("description") or "")
+            if title and link:
+                articles.append({
+                    "title": title,
+                    "description": desc,
+                    "url": link,
+                    "source_tag": "FXStreet Live",
+                })
+    except Exception as e:
+        log(f"FXStreet RSS олишда хато: {e}")
+    return articles
+
+
+def fetch_newsapi_articles():
+    """
+    NewsAPI орқали қўшимча глобал макроиқтисодий мақолаларни олади.
+    """
     if not NEWS_API_KEY:
-        log("NEWS_API_KEY топилмади.")
         return []
 
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": (
             '("gold price" OR XAU OR "GBP/USD" OR "USD/JPY" OR "USD/CAD" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
-            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR "interest rate" OR BoE OR BoC OR BoJ OR RBI OR PBOC OR "treasury yields")'
+            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR PMI OR "business activity" OR "interest rate" '
+            'OR BoE OR BoC OR BoJ OR RBI OR PBOC OR "treasury yields")'
         ),
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 8,
+        "pageSize": 6,
         "apiKey": NEWS_API_KEY,
     }
 
+    articles = []
     try:
         response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
         data = response.json()
-        return data.get("articles", [])
+        for art in data.get("articles", []):
+            if art.get("url") and art.get("title"):
+                articles.append({
+                    "title": art.get("title", "").strip(),
+                    "description": clean_html_tags(art.get("description") or ""),
+                    "url": art.get("url", "").strip(),
+                    "source_tag": "Global Macro",
+                })
     except Exception as e:
-        log(f"Yangiliklarni olishda xato: {e}")
-        return []
+        log(f"NewsAPI олишда хато: {e}")
+    return articles
+
+
+def fetch_combined_news():
+    """
+    Биринчи навбатда тезкор FXStreet RSS янгиликларини, сўнгра NewsAPI хабарларини бирлаштиради.
+    """
+    fx_news = fetch_fxstreet_rss()
+    macro_news = fetch_newsapi_articles()
+    return fx_news + macro_news
 
 
 def analyze_news(title: str, description: str, live_prices_text: str) -> str:
@@ -293,7 +353,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Vaqt mintaqasi: UTC+5")
+    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Manbalar: FXStreet RSS + NewsAPI")
 
     while True:
         now_uz = get_uz_now()
@@ -312,7 +372,7 @@ def main_loop():
 
         new_count = 0
         try:
-            articles = fetch_financial_news()
+            articles = fetch_combined_news()
             for article in articles:
                 if not can_call_gemini(get_uz_now()):
                     log("Кунлик сўров лимитига етилди, қолган мақолалар тўхтатилди.")
@@ -328,12 +388,13 @@ def main_loop():
                 processed_urls.add(article_url)
                 title = article.get("title") or "Sarlavhasiz yangilik"
                 description = article.get("description") or ""
+                source_tag = article.get("source_tag") or "Manba"
 
                 if not is_market_relevant_article(title, description):
-                    log(f"Ўтказиб юборилди (локал/бозорга таъсирсиз): {title[:65]}...")
+                    log(f"Ўтказиб юборилди (локал/таъсирсиз): {title[:65]}...")
                     continue
 
-                log(f"Реал нархлар олинмоқда ва таҳлил қилинмоқда: {title[:70]}...")
+                log(f"[{source_tag}] Реал нархлар олинмоқда ва таҳлил қилинмоқда: {title[:65]}...")
                 live_prices_text = fetch_live_prices()
                 log(f"Олинган жорий нархлар:\n{live_prices_text}")
 
@@ -342,7 +403,7 @@ def main_loop():
 
                 if analysis:
                     message = (
-                        f"📊 Fundamental Tahlil ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
+                        f"📊 Fundamental Tahlil [{source_tag}] ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
                         f"📰 {title}\n\n"
                         f"{analysis}\n\n"
                         f"🔗 Manba: {article_url}"
