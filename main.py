@@ -52,7 +52,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 MODEL_NAME = "gemini-2.5-flash"
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
-MAX_DAILY_GEMINI_CALLS = 18           # Кунлик сўров лимити
+MAX_DAILY_GEMINI_CALLS = 18           # Free Tier кунлик лимит
 FXSTREET_RSS_URL = "https://www.fxstreet.com/rss/news"
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -80,7 +80,7 @@ MARKET_IMPACT_KEYWORDS = (
     "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
 )
 
-# Локал заргарлик дўконлари ва крипто шовқинини блоклаш
+# Фақат Ҳиндистон заргарлик дўконлари ва крипто шовқинини блоклаш (FXStreet янгиликлари очиқ)
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
@@ -255,6 +255,21 @@ def fetch_all_market_data() -> str:
     return "\n".join(blocks)
 
 
+def fetch_simple_prices() -> str:
+    lines = []
+    for label, (candidates, decimals) in MARKET_SYMBOLS.items():
+        price_val = None
+        for sym in candidates:
+            try:
+                snap = fetch_technical_snapshot(sym, decimals)
+                price_val = snap["price"]
+                break
+            except Exception:
+                continue
+        lines.append(f"• {label}: {price_val if price_val is not None else 'Noma’lum'}")
+    return "\n".join(lines)
+
+
 # --- 4. Янгиликларни олиш (FXStreet Live RSS + NewsAPI) ---
 def fetch_fxstreet_rss():
     headers = {
@@ -321,7 +336,7 @@ def fetch_combined_news():
     return fetch_fxstreet_rss() + fetch_newsapi_articles()
 
 
-# --- 5. Gemini орқали Фундаментал + Техник таҳлил (айнан сиз сўраган кўринишда) ---
+# --- 5. Gemini орқали Фундаментал + Техник таҳлил ---
 def analyze_news(title: str, description: str, market_data_text: str) -> str:
     if not client:
         log("GEMINI_API_KEY sozlanmagan.")
@@ -393,16 +408,37 @@ def send_telegram_message(text: str) -> bool:
         return False
 
 
+def notify_startup():
+    """
+    Деплой тугаши билан 1 та қисқа тасдиқловчи хабар юборади.
+    """
+    now_str = get_uz_now().strftime("%H:%M")
+    try:
+        prices_text = fetch_simple_prices()
+        msg = (
+            f"✅ Бот янгиланди ва ишга тушди ({now_str} UZ)\n\n"
+            f"Жонли нархлар ушланди:\n{prices_text}\n\n"
+            f"Янги хабарлар кутилмоқда..."
+        )
+        send_telegram_message(msg)
+        log("Ишга тушганлик ҳақида тасдиқловчи хабар юборилди.")
+    except Exception as e:
+        log(f"Startup хабарида хато: {e}")
+
+
 def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Fundamental + Technical Mode")
+    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | FXStreet RSS + NewsAPI")
+    notify_startup()
 
+    cycle_num = 0
     while True:
+        cycle_num += 1
         now_uz = get_uz_now()
         is_active, sleep_seconds, mode_label = get_schedule_info(now_uz)
-        log(f"[{now_uz.strftime('%H:%M')} UZ] {mode_label}")
+        log(f"=== [Цикл #{cycle_num} | {now_uz.strftime('%H:%M')} UZ] {mode_label} ===")
 
         if not is_active:
             log(f"12:00 гача кутилмоқда ({sleep_seconds} сония)...")
@@ -417,7 +453,10 @@ def main_loop():
         new_count = 0
         try:
             articles = fetch_combined_news()
-            log(f"Жами текширилаётган мақолалар сони: {len(articles)}")
+            log(f"Цикл #{cycle_num}: Жами {len(articles)} та мақола олинди, текширилмоқда...")
+
+            skipped_seen = 0
+            skipped_noise = 0
 
             for article in articles:
                 if not can_call_gemini(get_uz_now()):
@@ -429,6 +468,7 @@ def main_loop():
 
                 article_url = article.get("url")
                 if not article_url or article_url in processed_urls:
+                    skipped_seen += 1
                     continue
 
                 processed_urls.add(article_url)
@@ -436,10 +476,11 @@ def main_loop():
                 description = article.get("description") or ""
 
                 if not is_market_relevant_article(title, description):
+                    skipped_noise += 1
                     log(f"Ўтказиб юборилди (шовқин/алоқасиз): {title[:60]}...")
                     continue
 
-                log(f"Фундаментал ва техник таҳлил тайёрланмоқда: {title[:60]}...")
+                log(f"Мос янгилик топилди! Таҳлил тайёрланмоқда: {title[:65]}...")
                 market_data_text = fetch_all_market_data()
 
                 register_gemini_call(get_uz_now())
@@ -454,11 +495,13 @@ def main_loop():
                     )
                     if send_telegram_message(message):
                         new_count += 1
-                        log(f"Таҳлил юборилди. Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
+                        log(f"Таҳлил юборилди! Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
                     time.sleep(2)
 
-            if new_count == 0:
-                log("Ҳозирча янги глобал бозор хабари топилмади.")
+            log(
+                f"Цикл #{cycle_num} якунланди: Кўрилди={len(articles)} | "
+                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | Юборилди={new_count}"
+            )
 
         except Exception as e:
             log(f"Асосий циклда хато: {e}")
