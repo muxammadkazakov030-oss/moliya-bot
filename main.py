@@ -57,8 +57,9 @@ CANDIDATE_MODELS = [
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
 MAX_DAILY_GEMINI_CALLS = 18           # Free Tier кунлик лимит
 
-# Cloudflare блокламайдиган тезкор молиявий ва форекс RSS ленталар
+# Cloudflare блокламайдиган тезкор молиявий ва форекс RSS ленталар + FXStreet
 RSS_FEEDS = [
+    ("FXStreet Forex", "https://xml.fxstreet.com/news/forex-news/index.xml"),
     ("Investing Forex", "https://www.investing.com/rss/news_1.rss"),
     ("Investing Economy", "https://www.investing.com/rss/news_14.rss"),
     ("CNBC Economy", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"),
@@ -295,7 +296,7 @@ def fetch_simple_prices() -> str:
     return "\n".join(lines)
 
 
-# --- 4. Янгиликларни олиш (Очиқ молиявий RSS ленталар + NewsAPI) ---
+# --- 4. Янгиликларни олиш (FXStreet + Очиқ молиявий RSS ленталар + NewsAPI) ---
 def fetch_all_rss_feeds():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -456,7 +457,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Multi-RSS + NewsAPI")
+    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Multi-RSS (incl. FXStreet) + NewsAPI")
     notify_startup()
 
     cycle_num = 0
