@@ -53,7 +53,14 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MODEL_NAME = "gemini-2.5-flash"
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
 MAX_DAILY_GEMINI_CALLS = 18           # Free Tier кунлик лимит
-FXSTREET_RSS_URL = "https://www.fxstreet.com/rss/news"
+
+# Cloudflare блокламайдиган тезкор молиявий ва форекс RSS ленталар
+RSS_FEEDS = [
+    ("Investing Forex", "https://www.investing.com/rss/news_1.rss"),
+    ("Investing Economy", "https://www.investing.com/rss/news_14.rss"),
+    ("CNBC Economy", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+]
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 processed_urls = set()
@@ -70,17 +77,17 @@ MARKET_IMPACT_KEYWORDS = (
     "jobless", "gdp", "pmi", "business activity", "manufacturing", "services",
     "retail sales", "pce", "boe", "bank of england", "bailey",
     "boc", "bank of canada", "macklem", "boj", "ueda", "rbi", "pboc",
-    "central bank", "reserves", "import duty", "tariff", "sanctions",
+    "central bank", "reserves", "tariff", "sanctions",
     "treasury", "yield", "bond", "xau", "gold", "bullion",
-    "gbp/usd", "gbpusd", "pound", "sterling", "uk", "britain",
-    "usd/jpy", "usdjpy", "yen", "japan",
-    "usd/cad", "usdcad", "loonie", "canadian", "canada",
+    "gbp/usd", "gbpusd", "pound", "sterling",
+    "usd/jpy", "usdjpy", "yen",
+    "usd/cad", "usdcad", "loonie",
     "nasdaq", "us100", "s&p 500", "wall street", "tech stocks",
     "dxy", "dollar", "greenback",
     "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
 )
 
-# Фақат Ҳиндистон заргарлик дўконлари ва крипто шовқинини блоклаш (FXStreet янгиликлари очиқ)
+# Локал заргарлик дўконлари ва крипто шовқинини блоклаш
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
@@ -88,7 +95,6 @@ LOCAL_RETAIL_NOISE_KEYWORDS = (
     "bitcoin", "ethereum", "solana", "ripple", "xrp", "dogecoin", "crypto"
 )
 
-# Йирик давлатларнинг глобал бозорга таъсир қилувчи макроиқтисодий истисно сўзлари
 MACRO_OVERRIDE_KEYWORDS = (
     "central bank", "rbi", "reserve bank of india", "pboc", "fed", "boe", "boc", "boj",
     "interest rate", "rate cut", "rate hike", "inflation", "cpi", "gdp", "pmi",
@@ -270,30 +276,33 @@ def fetch_simple_prices() -> str:
     return "\n".join(lines)
 
 
-# --- 4. Янгиликларни олиш (FXStreet Live RSS + NewsAPI) ---
-def fetch_fxstreet_rss():
+# --- 4. Янгиликларни олиш (Очиқ молиявий RSS ленталар + NewsAPI) ---
+def fetch_all_rss_feeds():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
     }
     articles = []
-    try:
-        resp = requests.get(FXSTREET_RSS_URL, headers=headers, timeout=15)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-        for item in root.findall(".//item")[:10]:
-            title = (item.findtext("title") or "").strip()
-            link = (item.findtext("link") or "").strip()
-            desc = clean_html_tags(item.findtext("description") or "")
-            if title and link:
-                articles.append({
-                    "title": title,
-                    "description": desc,
-                    "url": link,
-                })
-        log(f"FXStreet RSS'дан {len(articles)} та мақола олинди.")
-    except Exception as e:
-        log(f"FXStreet RSS олишда хато: {e}")
+    for feed_name, feed_url in RSS_FEEDS:
+        try:
+            resp = requests.get(feed_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+            count = 0
+            for item in root.findall(".//item")[:7]:
+                title = (item.findtext("title") or "").strip()
+                link = (item.findtext("link") or "").strip()
+                desc = clean_html_tags(item.findtext("description") or "")
+                if title and link:
+                    articles.append({
+                        "title": title,
+                        "description": desc,
+                        "url": link,
+                    })
+                    count += 1
+            log(f"RSS [{feed_name}]: {count} та мақола олинди.")
+        except Exception as e:
+            log(f"RSS [{feed_name}] хатоси: {e}")
     return articles
 
 
@@ -305,12 +314,11 @@ def fetch_newsapi_articles():
     params = {
         "q": (
             '("gold price" OR XAU OR "GBP/USD" OR "USD/JPY" OR "USD/CAD" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
-            'OR (Fed OR FOMC OR CPI OR inflation OR NFP OR PMI OR "business activity" OR "interest rate" '
-            'OR BoE OR BoC OR BoJ OR RBI OR PBOC OR "treasury yields")'
+            'AND (Fed OR FOMC OR CPI OR inflation OR NFP OR PMI OR "interest rate" OR BoE OR BoC OR BoJ OR yields OR forex OR market)'
         ),
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 6,
+        "pageSize": 15,
         "apiKey": NEWS_API_KEY,
     }
 
@@ -333,7 +341,7 @@ def fetch_newsapi_articles():
 
 
 def fetch_combined_news():
-    return fetch_fxstreet_rss() + fetch_newsapi_articles()
+    return fetch_all_rss_feeds() + fetch_newsapi_articles()
 
 
 # --- 5. Gemini орқали Фундаментал + Техник таҳлил ---
@@ -409,9 +417,6 @@ def send_telegram_message(text: str) -> bool:
 
 
 def notify_startup():
-    """
-    Деплой тугаши билан 1 та қисқа тасдиқловчи хабар юборади.
-    """
     now_str = get_uz_now().strftime("%H:%M")
     try:
         prices_text = fetch_simple_prices()
@@ -430,7 +435,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | FXStreet RSS + NewsAPI")
+    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Multi-RSS + NewsAPI")
     notify_startup()
 
     cycle_num = 0
