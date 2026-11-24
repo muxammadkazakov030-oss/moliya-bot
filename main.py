@@ -50,7 +50,12 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-MODEL_NAME = "gemini-2.5-flash"
+# Янгиланган Gemini моделлари (биринчи ишлаганидан фойдаланади)
+CANDIDATE_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3-flash",
+    "gemini-2.5-flash-lite",
+]
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
 MAX_DAILY_GEMINI_CALLS = 18           # Free Tier кунлик лимит
 
@@ -366,31 +371,35 @@ def analyze_news(title: str, description: str, market_data_text: str) -> str:
         "#### [Aktiv nomi] (Joriy narx: [joriy narx])\n"
         "- **Ta'siri va izoh:** (Fundamental sabab + EMA-20, RSI va Support/Resistance texnik holatiga tayangan 1-2 gaplik aniq izoh)\n"
         "- **Yo'nalish:** Buy, Sell yoki Kuzatuv\n"
-        "- **Entry:** (joriy narxga mos kirish oralig'i; agar Kuzatuv bo'lsa yozma)\n"
-        "- **SL:** (Support/Resistance ortiga qo'yilgan Stop Loss; agar Kuzatuv bo'lsa yozma)\n"
-        "- **TP:** (texnik maqsad Take Profit; agar Kuzatuv bo'lsa yozma)\n\n"
+        "- **Entry:** (joriy narxga mos aniq kirish narxi yoki oralig'i; agar Kuzatuv bo'lsa yozma)\n"
+        "- **SL:** (Support/Resistance ortiga qo'yilgan aniq Stop Loss narxi; agar Kuzatuv bo'lsa yozma)\n"
+        "- **TP:** (texnik maqsad aniq Take Profit narxi; agar Kuzatuv bo'lsa yozma)\n\n"
         "---\n\n"
         "*Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.*"
     )
 
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-            )
-            return (response.text or "").strip()
-        except Exception as e:
-            err_str = str(e)
-            log(f"Gemini tahlilida xato (urinish {attempt}/{max_attempts}): {err_str}")
-            is_retryable = ("503" in err_str) or ("UNAVAILABLE" in err_str) or ("500" in err_str) or ("429" in err_str)
-            if is_retryable and attempt < max_attempts:
-                wait_sec = attempt * 4
-                log(f"Vaqtinchalik yuklama sabab {wait_sec} soniyadan so'ng qayta uriniladi...")
-                time.sleep(wait_sec)
-            else:
-                break
+    for model_name in CANDIDATE_MODELS:
+        for attempt in range(1, 3):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                text = (response.text or "").strip()
+                if text:
+                    log(f"Таҳлил муваффақиятли яратилди (модел: {model_name}).")
+                    return text
+            except Exception as e:
+                err_str = str(e)
+                log(f"Gemini хатоси [{model_name} | уриниш {attempt}/2]: {err_str}")
+                if "404" in err_str or "NOT_FOUND" in err_str:
+                    # Модел топилмаса кейинги моделга ўтамиз
+                    break
+                is_retryable = ("503" in err_str) or ("UNAVAILABLE" in err_str) or ("500" in err_str) or ("429" in err_str)
+                if is_retryable and attempt < 2:
+                    time.sleep(3)
+                else:
+                    break
 
     return ""
 
@@ -435,7 +444,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Model: {MODEL_NAME} | Multi-RSS + NewsAPI")
+    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Multi-RSS + NewsAPI")
     notify_startup()
 
     cycle_num = 0
@@ -482,16 +491,14 @@ def main_loop():
 
                 if not is_market_relevant_article(title, description):
                     skipped_noise += 1
-                    log(f"Ўтказиб юборилди (шовқин/алоқасиз): {title[:60]}...")
                     continue
 
                 log(f"Мос янгилик топилди! Таҳлил тайёрланмоқда: {title[:65]}...")
                 market_data_text = fetch_all_market_data()
-
-                register_gemini_call(get_uz_now())
                 analysis = analyze_news(title, description, market_data_text)
 
                 if analysis:
+                    register_gemini_call(get_uz_now())
                     message = (
                         f"📊 Fundamental Tahlil ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
                         f"📰 {title}\n\n"
