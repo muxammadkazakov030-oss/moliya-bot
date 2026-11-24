@@ -50,6 +50,7 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
+# Янгиланган Gemini моделлари (биринчи ишлаганидан фойдаланади)
 CANDIDATE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3-flash",
@@ -156,22 +157,6 @@ def clean_html_tags(raw_text: str) -> str:
         return ""
     cleaned = re.sub(r"<[^>]+>", " ", raw_text)
     return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def clean_telegram_formatting(text: str) -> str:
-    if not text:
-        return ""
-    cleaned = text
-    # Markdown sarlavha belgilarini (###, ####) olib tashlash
-    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
-    # Gorizontal chiziqlarni (---) olib tashlash
-    cleaned = re.sub(r"^\s*-{3,}\s*$", "", cleaned, flags=re.MULTILINE)
-    # Qalin (**) va kursiv (*) yulduzchalarni olib tashlash
-    cleaned = re.sub(r"\*{1,2}([^*\n]+)\*{1,2}", r"\1", cleaned)
-    cleaned = cleaned.replace("**", "").replace("*", "")
-    # Ortiqcha bo'sh qatorlarni tartiblash
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
 
 
 def is_market_relevant_article(title: str, description: str) -> bool:
@@ -377,18 +362,20 @@ def analyze_news(title: str, description: str, market_data_text: str) -> str:
         f"JORIY BOZOR VA TEXNIK MA'LUMOTLAR:\n{market_data_text}\n\n"
         f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
         f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
-        "Tahlilni O'ZBEK TILIDA quyidagi tuzilishda yoz. Markdown belgilarini (###, ####, **, ---) ishlatma, matn toza ko'rinsin:\n\n"
-        "1. Yangilikning qisqa mazmuni\n"
-        "(1-2 gapda yangilik mohiyati va oxirida qavs ichida ta'sir darajasi: (High-Impact), (O'rtacha) yoki (Past)).\n\n"
-        "2. Bozor tahlili va savdo mo‘ljallari\n\n"
+        "Tahlilni O'ZBEK TILIDA quyidagi AYNAN SHU FORMATDA ber (boshqa qo'shimcha sarlavha yoki izoh qo'shma):\n\n"
+        "### 1. Yangilikning qisqa mazmuni\n"
+        "(1-2 gapda yangilik mohiyati va oxirida qavs ichida ta'sir darajasi: (**High-Impact**), (**O'rtacha**) yoki (**Past**)).\n\n"
+        "---\n\n"
+        "### 2. Bozor tahlili va savdo mo‘ljallari\n\n"
         "Har bir aktiv uchun (XAU/USD (Oltin), GBP/USD, USD/JPY, USD/CAD, Nasdaq (US100), WTI Oil) quyidagi ko'rinishda yoz:\n\n"
-        "[Aktiv nomi] (Joriy narx: [joriy narx])\n"
-        "- Ta'siri va izoh: (Fundamental sabab + EMA-20, RSI va Support/Resistance texnik holatiga tayangan 1-2 gaplik aniq izoh)\n"
-        "- Yo'nalish: Buy, Sell yoki Kuzatuv\n"
-        "- Entry: (joriy narxga mos aniq kirish narxi yoki oralig'i; agar Kuzatuv bo'lsa yozma)\n"
-        "- SL: (Support/Resistance ortiga qo'yilgan aniq Stop Loss narxi; agar Kuzatuv bo'lsa yozma)\n"
-        "- TP: (texnik maqsad aniq Take Profit narxi; agar Kuzatuv bo'lsa yozma)\n\n"
-        "Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi."
+        "#### [Aktiv nomi] (Joriy narx: [joriy narx])\n"
+        "- **Ta'siri va izoh:** (Fundamental sabab + EMA-20, RSI va Support/Resistance texnik holatiga tayangan 1-2 gaplik aniq izoh)\n"
+        "- **Yo'nalish:** Buy, Sell yoki Kuzatuv\n"
+        "- **Entry:** (joriy narxga mos aniq kirish narxi yoki oralig'i; agar Kuzatuv bo'lsa yozma)\n"
+        "- **SL:** (Support/Resistance ortiga qo'yilgan aniq Stop Loss narxi; agar Kuzatuv bo'lsa yozma)\n"
+        "- **TP:** (texnik maqsad aniq Take Profit narxi; agar Kuzatuv bo'lsa yozma)\n\n"
+        "---\n\n"
+        "*Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi.*"
     )
 
     for model_name in CANDIDATE_MODELS:
@@ -398,15 +385,15 @@ def analyze_news(title: str, description: str, market_data_text: str) -> str:
                     model=model_name,
                     contents=prompt,
                 )
-                raw_text = (response.text or "").strip()
-                cleaned_text = clean_telegram_formatting(raw_text)
-                if cleaned_text:
+                text = (response.text or "").strip()
+                if text:
                     log(f"Таҳлил муваффақиятли яратилди (модел: {model_name}).")
-                    return cleaned_text
+                    return text
             except Exception as e:
                 err_str = str(e)
                 log(f"Gemini хатоси [{model_name} | уриниш {attempt}/2]: {err_str}")
                 if "404" in err_str or "NOT_FOUND" in err_str:
+                    # Модел топилмаса кейинги моделга ўтамиз
                     break
                 is_retryable = ("503" in err_str) or ("UNAVAILABLE" in err_str) or ("500" in err_str) or ("429" in err_str)
                 if is_retryable and attempt < 2:
