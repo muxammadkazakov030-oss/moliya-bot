@@ -91,18 +91,19 @@ MARKET_IMPACT_KEYWORDS = (
     "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
 )
 
-# Локал заргарлик дўконлари ва крипто шовқинини блоклаш
+# Локал заргарлик дўконлари, иккиламчи валюталар ва крипто шовқинини блоклаш
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
     "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding",
-    "bitcoin", "ethereum", "solana", "ripple", "xrp", "dogecoin", "crypto"
+    "bitcoin", "ethereum", "solana", "ripple", "xrp", "dogecoin", "crypto",
+    "forint", "nbh", "hungarian", "zloty", "koruna", "lira", "rand", "peso", "rupee"
 )
 
 MACRO_OVERRIDE_KEYWORDS = (
-    "central bank", "rbi", "reserve bank of india", "pboc", "fed", "boe", "boc", "boj",
-    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "gdp", "pmi",
-    "import duty", "customs duty", "gold reserves", "sovereign", "tariff", "opec", "dxy"
+    "central bank", "fed", "boe", "boc", "boj", "ecb",
+    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "nfp", "gdp", "pmi",
+    "gold reserves", "sovereign", "tariff", "opec", "dxy", "fomc", "powell"
 )
 
 # 6 та асосий актив (MT5 спот котировкаларига максимал мос; XAU/USD учун тўғридан-тўғри GC=F ишлатилади)
@@ -176,12 +177,20 @@ def clean_telegram_formatting(text: str) -> str:
 
 def is_market_relevant_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
-    has_macro_override = any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS)
-
-    if not has_macro_override and any(noise in combined for noise in LOCAL_RETAIL_NOISE_KEYWORDS):
+    if any(noise in combined for noise in LOCAL_RETAIL_NOISE_KEYWORDS):
         return False
 
+    has_macro_override = any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS)
+    if has_macro_override:
+        return True
+
     return any(kw in combined for kw in MARKET_IMPACT_KEYWORDS)
+
+
+def is_high_impact_analysis(analysis_text: str) -> bool:
+    if not analysis_text:
+        return False
+    return "high-impact" in analysis_text.lower()
 
 
 # --- 3. Техник индикаторларни ҳисоблаш (EMA-20, RSI-14, Support/Resistance) ---
@@ -445,7 +454,7 @@ def notify_startup():
         msg = (
             f"✅ Бот янгиланди ва ишга тушди ({now_str} UZ)\n\n"
             f"Жонли нархлар ушланди:\n{prices_text}\n\n"
-            f"Янги хабарлар кутилмоқда..."
+            f"Фақат (High-Impact) янгиликлар кутилмоқда..."
         )
         send_telegram_message(msg)
         log("Ишга тушганлик ҳақида тасдиқловчи хабар юборилди.")
@@ -457,7 +466,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Multi-RSS (incl. FXStreet) + NewsAPI")
+    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Filter: High-Impact Only")
     notify_startup()
 
     cycle_num = 0
@@ -484,6 +493,7 @@ def main_loop():
 
             skipped_seen = 0
             skipped_noise = 0
+            skipped_low_impact = 0
 
             for article in articles:
                 if not can_call_gemini(get_uz_now()):
@@ -506,12 +516,17 @@ def main_loop():
                     skipped_noise += 1
                     continue
 
-                log(f"Мос янгилик топилди! Таҳлил тайёрланмоқда: {title[:65]}...")
+                log(f"Мос янгилик топилди! Таъсир даражаси текширилмоқда: {title[:65]}...")
                 market_data_text = fetch_all_market_data()
                 analysis = analyze_news(title, description, market_data_text)
 
                 if analysis:
                     register_gemini_call(get_uz_now())
+                    if not is_high_impact_analysis(analysis):
+                        skipped_low_impact += 1
+                        log(f"Таҳлил (High-Impact) эмас, Telegram'га юборилмади: {title[:55]}...")
+                        continue
+
                     message = (
                         f"📊 Fundamental Tahlil ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
                         f"📰 {title}\n\n"
@@ -520,12 +535,13 @@ def main_loop():
                     )
                     if send_telegram_message(message):
                         new_count += 1
-                        log(f"Таҳлил юборилди! Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
+                        log(f"High-Impact таҳлил юборилди! Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
                     time.sleep(2)
 
             log(
                 f"Цикл #{cycle_num} якунланди: Кўрилди={len(articles)} | "
-                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | Юборилди={new_count}"
+                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | "
+                f"Паст/Ўртача={skipped_low_impact} | Юборилди={new_count}"
             )
 
         except Exception as e:
