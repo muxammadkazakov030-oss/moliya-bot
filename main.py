@@ -80,7 +80,7 @@ MARKET_IMPACT_KEYWORDS = (
     "rate cut", "rate hike", "nfp", "non-farm", "nonfarm", "payroll", "unemployment",
     "jobless", "gdp", "pmi", "business activity", "manufacturing", "services",
     "retail sales", "pce", "boe", "bank of england", "bailey",
-    "boc", "bank of canada", "macklem", "boj", "ueda", "rbi", "pboc",
+    "boc", "bank of canada", "macklem", "boj", "ueda", "pboc",
     "central bank", "reserves", "tariff", "sanctions",
     "treasury", "yield", "bond", "xau", "gold", "bullion",
     "gbp/usd", "gbpusd", "pound", "sterling",
@@ -91,19 +91,22 @@ MARKET_IMPACT_KEYWORDS = (
     "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
 )
 
-# Локал заргарлик дўконлари, иккиламчи валюталар ва крипто шовқинини блоклаш
+# Локал заргарлик дўконлари, иккиламчи валюталар, техник тахмин мақолалари ва крипто шовқинини блоклаш
 LOCAL_RETAIL_NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
     "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding",
     "bitcoin", "ethereum", "solana", "ripple", "xrp", "dogecoin", "crypto",
-    "forint", "nbh", "hungarian", "zloty", "koruna", "lira", "rand", "peso", "rupee"
+    "forint", "nbh", "hungarian", "zloty", "koruna", "lira", "rand", "peso", "rupee",
+    "sensex", "nifty", "bse",
+    "price forecast", "technical analysis", "chart of the day", "elliott wave",
+    "fibo retracement", "fibonacci"
 )
 
 MACRO_OVERRIDE_KEYWORDS = (
     "central bank", "fed", "boe", "boc", "boj", "ecb",
-    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "nfp", "gdp", "pmi",
-    "gold reserves", "sovereign", "tariff", "opec", "dxy", "fomc", "powell"
+    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "pce", "nfp", "gdp", "pmi",
+    "gold reserves", "sovereign", "tariff", "opec", "fomc", "powell", "nonfarm", "payroll"
 )
 
 # 6 та асосий актив (MT5 спот котировкаларига максимал мос; XAU/USD учун тўғридан-тўғри GC=F ишлатилади)
@@ -124,16 +127,12 @@ def get_uz_now() -> datetime:
 def get_schedule_info(now_uz: datetime):
     minutes = now_uz.hour * 60 + now_uz.minute
 
-    # 00:30 дан 12:00 гача -> Тунги/тонги сокин режим (лимит тежалади)
-    if 30 <= minutes < 720:
-        return False, 1800, "Тунги/тонги сокин режим (12:00 гача Gemini лимити тежалади)"
-
-    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / Канада / High-Impact юқори фаоллик соатлари
+    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / Канада / High-Impact юқори фаоллик соатлари (ҳар 10 дақиқада)
     if (960 <= minutes <= 1230) or (minutes >= 1290) or (minutes < 30):
-        return True, 600, "Юқори фаоллик (АҚШ / Канада / High-Impact соати — ҳар 10 дақиқада)"
+        return True, 600, "24/7 Юқори фаоллик (АҚШ / Канада / High-Impact соати — ҳар 10 дақиқада)"
 
-    # 12:00 - 16:00 ва 20:30 - 21:30 -> Лондон / Европа сессияси фаол режими
-    return True, 900, "Фаол режим (Лондон/бозор соатлари — ҳар 15 дақиқада)"
+    # Қолган барча соатларда (шу жумладан тунда ва тонгда ҳам) фаол (ҳар 15 дақиқада)
+    return True, 900, "24/7 Фаол режим (ҳар 15 дақиқада)"
 
 
 def can_call_gemini(now_uz: datetime) -> bool:
@@ -343,7 +342,7 @@ def fetch_newsapi_articles():
     params = {
         "q": (
             '("gold price" OR XAU OR "GBP/USD" OR "USD/JPY" OR "USD/CAD" OR Nasdaq OR DXY OR "crude oil" OR WTI) '
-            'AND (Fed OR FOMC OR CPI OR inflation OR NFP OR PMI OR "interest rate" OR BoE OR BoC OR BoJ OR yields OR forex OR market)'
+            'AND (Fed OR FOMC OR CPI OR PCE OR inflation OR NFP OR PMI OR "interest rate" OR BoE OR BoC OR BoJ OR yields OR tariff)'
         ),
         "language": "en",
         "sortBy": "publishedAt",
@@ -452,9 +451,9 @@ def notify_startup():
     try:
         prices_text = fetch_simple_prices()
         msg = (
-            f"✅ Бот янгиланди ва ишга тушди ({now_str} UZ)\n\n"
+            f"✅ Бот 24/7 режимида ишга тушди ({now_str} UZ)\n\n"
             f"Жонли нархлар ушланди:\n{prices_text}\n\n"
-            f"Фақат (High-Impact) янгиликлар кутилмоқда..."
+            f"Фақат реал (High-Impact) макро-янгиликлар кутилмоқда..."
         )
         send_telegram_message(msg)
         log("Ишга тушганлик ҳақида тасдиқловчи хабар юборилди.")
@@ -466,20 +465,15 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot ishga tushdi. Modellar: {CANDIDATE_MODELS} | Filter: High-Impact Only")
+    log(f"Moliya bot 24/7 rejimda ishga tushdi. Modellar: {CANDIDATE_MODELS} | Filter: High-Impact Macro Only")
     notify_startup()
 
     cycle_num = 0
     while True:
         cycle_num += 1
         now_uz = get_uz_now()
-        is_active, sleep_seconds, mode_label = get_schedule_info(now_uz)
+        _, sleep_seconds, mode_label = get_schedule_info(now_uz)
         log(f"=== [Цикл #{cycle_num} | {now_uz.strftime('%H:%M')} UZ] {mode_label} ===")
-
-        if not is_active:
-            log(f"12:00 гача кутилмоқда ({sleep_seconds} сония)...")
-            time.sleep(sleep_seconds)
-            continue
 
         if not can_call_gemini(now_uz):
             log(f"Кунлик Gemini лимити ({MAX_DAILY_GEMINI_CALLS} та сўров) тўлди. Эртанги кунгача кутилмоқда...")
@@ -516,7 +510,7 @@ def main_loop():
                     skipped_noise += 1
                     continue
 
-                log(f"Мос янгилик топилди! Таъсир даражаси текширилмоқда: {title[:65]}...")
+                log(f"Мос макро-янгилик топилди! Таъсир даражаси текширилмоқда: {title[:65]}...")
                 market_data_text = fetch_all_market_data()
                 analysis = analyze_news(title, description, market_data_text)
 
@@ -540,7 +534,7 @@ def main_loop():
 
             log(
                 f"Цикл #{cycle_num} якунланди: Кўрилди={len(articles)} | "
-                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | "
+                f"Аввал ўқилган={skipped_seen} | Шовқин/Прогноз={skipped_noise} | "
                 f"Паст/Ўртача={skipped_low_impact} | Юборилди={new_count}"
             )
 
