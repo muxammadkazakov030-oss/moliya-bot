@@ -55,9 +55,8 @@ CANDIDATE_MODELS = [
     "gemini-3.5-flash",
 ]
 UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
-MAX_DAILY_GEMINI_CALLS = 18           # Free Tier кунлик лимит
+MAX_DAILY_GEMINI_CALLS = 18           # Кунлик сўров лимити
 
-# Cloudflare блокламайдиган тезкор молиявий ва форекс RSS ленталар + FXStreet
 RSS_FEEDS = [
     ("FXStreet Forex", "https://xml.fxstreet.com/news/forex-news/index.xml"),
     ("Investing Forex", "https://www.investing.com/rss/news_1.rss"),
@@ -74,25 +73,21 @@ daily_state = {
     "calls": 0,
 }
 
-# Муҳим макроиқтисодий ва глобал молиявий бозор калит сўзлари
+# Фақат кучли макроиқтисодий ва глобал бозор катализаторлари
 MARKET_IMPACT_KEYWORDS = (
-    "cpi", "inflation", "fomc", "fed", "federal reserve", "powell", "interest rate",
-    "rate cut", "rate hike", "nfp", "non-farm", "nonfarm", "payroll", "unemployment",
-    "jobless", "gdp", "pmi", "business activity", "manufacturing", "services",
-    "retail sales", "pce", "boe", "bank of england", "bailey",
-    "boc", "bank of canada", "macklem", "boj", "ueda", "pboc",
-    "central bank", "reserves", "tariff", "sanctions",
-    "treasury", "yield", "bond", "xau", "gold", "bullion",
-    "gbp/usd", "gbpusd", "pound", "sterling",
-    "usd/jpy", "usdjpy", "yen",
-    "usd/cad", "usdcad", "loonie",
-    "nasdaq", "us100", "s&p 500", "wall street", "tech stocks",
-    "dxy", "dollar", "greenback",
-    "crude oil", "wti", "brent", "opec", "forex", "eur/usd", "eurozone"
+    "cpi", "inflation", "fomc", "fed", "federal reserve", "powell",
+    "interest rate", "rate cut", "rate hike", "nfp", "non-farm", "nonfarm",
+    "payroll", "unemployment", "jobless", "gdp", "pmi", "manufacturing",
+    "services", "retail sales", "pce", "boe", "bank of england", "bailey",
+    "boc", "bank of canada", "macklem", "boj", "ueda", "ecb", "lagarde",
+    "pboc", "central bank", "tariff", "tariffs", "sanctions",
+    "treasury", "yield", "yields", "xau", "gold",
+    "gbp/usd", "gbpusd", "usd/jpy", "usdjpy", "usd/cad", "usdcad",
+    "nasdaq", "us100", "dxy", "crude oil", "wti", "opec"
 )
 
-# Локал заргарлик дўконлари, иккиламчи валюталар, техник тахмин мақолалари ва крипто шовқинини блоклаш
-LOCAL_RETAIL_NOISE_KEYWORDS = (
+# Шовқин, маҳаллий бозорлар ва техник тахмин сарлавҳаларини кесиш
+NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
     "kolkata", "hyderabad", "bengaluru", "pune", "ahmedabad", "hallmark", "wedding",
@@ -100,16 +95,15 @@ LOCAL_RETAIL_NOISE_KEYWORDS = (
     "forint", "nbh", "hungarian", "zloty", "koruna", "lira", "rand", "peso", "rupee",
     "sensex", "nifty", "bse",
     "price forecast", "technical analysis", "chart of the day", "elliott wave",
-    "fibo retracement", "fibonacci"
+    "fibo retracement", "fibonacci", "crossroads"
 )
 
 MACRO_OVERRIDE_KEYWORDS = (
-    "central bank", "fed", "boe", "boc", "boj", "ecb",
-    "interest rate", "rate cut", "rate hike", "inflation", "cpi", "pce", "nfp", "gdp", "pmi",
-    "gold reserves", "sovereign", "tariff", "opec", "fomc", "powell", "nonfarm", "payroll"
+    "cpi", "pce", "inflation", "fomc", "fed", "powell",
+    "interest rate", "rate cut", "rate hike", "nfp", "nonfarm", "payroll",
+    "gdp", "pmi", "tariff", "tariffs", "boe", "boc", "boj", "ecb", "opec"
 )
 
-# 6 та асосий актив (MT5 спот котировкаларига максимал мос; XAU/USD учун тўғридан-тўғри GC=F ишлатилади)
 MARKET_SYMBOLS = {
     "XAU/USD (Oltin)": (["GC=F"], 2),
     "GBP/USD": (["GBPUSD=X"], 5),
@@ -126,12 +120,8 @@ def get_uz_now() -> datetime:
 
 def get_schedule_info(now_uz: datetime):
     minutes = now_uz.hour * 60 + now_uz.minute
-
-    # 16:00 - 20:30 ва 21:30 - 00:30 -> АҚШ / Канада / High-Impact юқори фаоллик соатлари (ҳар 10 дақиқада)
     if (960 <= minutes <= 1230) or (minutes >= 1290) or (minutes < 30):
-        return True, 600, "24/7 Юқори фаоллик (АҚШ / Канада / High-Impact соати — ҳар 10 дақиқада)"
-
-    # Қолган барча соатларда (шу жумладан тунда ва тонгда ҳам) фаол (ҳар 15 дақиқада)
+        return True, 600, "24/7 Юқори фаоллик (АҚШ / Канада / High-Impact — ҳар 10 дақиқада)"
     return True, 900, "24/7 Фаол режим (ҳар 15 дақиқада)"
 
 
@@ -161,28 +151,20 @@ def clean_html_tags(raw_text: str) -> str:
 def clean_telegram_formatting(text: str) -> str:
     if not text:
         return ""
-    cleaned = text
-    # Markdown sarlavha belgilarini (###, ####) olib tashlash
-    cleaned = re.sub(r"^#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
-    # Gorizontal chiziqlarni (---) olib tashlash
+    cleaned = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
     cleaned = re.sub(r"^\s*-{3,}\s*$", "", cleaned, flags=re.MULTILINE)
-    # Qalin (**) va kursiv (*) yulduzchalarni olib tashlash
     cleaned = re.sub(r"\*{1,2}([^*\n]+)\*{1,2}", r"\1", cleaned)
     cleaned = cleaned.replace("**", "").replace("*", "")
-    # Ortiqcha bo'sh qatorlarni tartiblash
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
 def is_market_relevant_article(title: str, description: str) -> bool:
     combined = f"{title} {description}".lower()
-    if any(noise in combined for noise in LOCAL_RETAIL_NOISE_KEYWORDS):
+    if any(noise in combined for noise in NOISE_KEYWORDS):
         return False
-
-    has_macro_override = any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS)
-    if has_macro_override:
+    if any(macro in combined for macro in MACRO_OVERRIDE_KEYWORDS):
         return True
-
     return any(kw in combined for kw in MARKET_IMPACT_KEYWORDS)
 
 
@@ -192,7 +174,7 @@ def is_high_impact_analysis(analysis_text: str) -> bool:
     return "high-impact" in analysis_text.lower()
 
 
-# --- 3. Техник индикаторларни ҳисоблаш (EMA-20, RSI-14, Support/Resistance) ---
+# --- 3. Техник индикаторлар (EMA-20, RSI-14, Support/Resistance) ---
 def compute_ema(prices: list, period: int = 20) -> float:
     if len(prices) < period:
         return sum(prices) / len(prices)
@@ -304,7 +286,7 @@ def fetch_simple_prices() -> str:
     return "\n".join(lines)
 
 
-# --- 4. Янгиликларни олиш (FXStreet + Очиқ молиявий RSS ленталар + NewsAPI) ---
+# --- 4. Янгиликларни олиш ---
 def fetch_all_rss_feeds():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -379,9 +361,12 @@ def analyze_news(title: str, description: str, market_data_text: str) -> str:
         return ""
 
     prompt = (
-        "Sen professional fundamental va texnik treyder-tahlilchisisisan.\n"
-        "Quyida yangilik va 6 ta aktivning JORIY REAL NARXLARI hamda H1 TEXNIK INDIKATORLARI (EMA-20, RSI-14, Support/Resistance) berilgan.\n"
-        "Faqat quyidagi real narxlar va texnik darajalarga asoslanib hisobla!\n\n"
+        "Sen ehtiyotkor va aniq fundamental hamda texnik treyder-tahlilchisisisan.\n"
+        "Quyida makroiqtisodiy yangilik va 6 ta aktivning JORIY REAL NARXLARI hamda H1 TEXNIK INDIKATORLARI (EMA-20, RSI-14, Support/Resistance) berilgan.\n"
+        "Qoidalar:\n"
+        "1. Faqat berilgan real narxlar va texnik darajalarga tayangan holda hisobla.\n"
+        "2. Agar aktivda trend noaniq bo'lsa, narx EMA-20 atrofida ikkilanayotgan bo'lsa yoki yangilik ta'siri noaniq bo'lsa, majburan Buy/Sell bermasdan 'Kuzatuv' deb yoz.\n"
+        "3. Buy/Sell berilganda SL doim mantiqiy himoya nuqtasida (Support/Resistance yoki EMA-20 ortida) va TP real texnik maqsadda bo'lsin, risk/reward kamida 1:1.2 atrofida bo'lishiga intil.\n\n"
         f"JORIY BOZOR VA TEXNIK MA'LUMOTLAR:\n{market_data_text}\n\n"
         f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
         f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
@@ -453,7 +438,7 @@ def notify_startup():
         msg = (
             f"✅ Бот 24/7 режимида ишга тушди ({now_str} UZ)\n\n"
             f"Жонли нархлар ушланди:\n{prices_text}\n\n"
-            f"Фақат реал (High-Impact) макро-янгиликлар кутилмоқда..."
+            f"Фақат аниқ (High-Impact) макро-сигналлар кутилмоқда..."
         )
         send_telegram_message(msg)
         log("Ишга тушганлик ҳақида тасдиқловчи хабар юборилди.")
@@ -465,7 +450,7 @@ def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
 
-    log(f"Moliya bot 24/7 rejimda ishga tushdi. Modellar: {CANDIDATE_MODELS} | Filter: High-Impact Macro Only")
+    log(f"Moliya bot 24/7 rejimda ishga tushdi. Modellar: {CANDIDATE_MODELS}")
     notify_startup()
 
     cycle_num = 0
@@ -534,7 +519,7 @@ def main_loop():
 
             log(
                 f"Цикл #{cycle_num} якунланди: Кўрилди={len(articles)} | "
-                f"Аввал ўқилган={skipped_seen} | Шовқин/Прогноз={skipped_noise} | "
+                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | "
                 f"Паст/Ўртача={skipped_low_impact} | Юборилди={new_count}"
             )
 
