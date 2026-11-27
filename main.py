@@ -13,13 +13,13 @@ def log(msg: str):
     print(msg, flush=True)
 
 
-# --- 1. Render HTTP сервер (порт очиш ва уйқудан сақлаш) ---
+# --- 1. Render HTTP сервер ва Keep-alive ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Moliya Bot is running!".encode("utf-8"))
+        self.wfile.write("Moliya Bot (Precision Signal) is running!".encode("utf-8"))
 
     def log_message(self, format, *args):
         return
@@ -44,7 +44,7 @@ def keep_alive_loop():
         time.sleep(240)
 
 
-# --- 2. Муҳит ўзгарувчилари ва созламалар ---
+# --- 2. Созламалар ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -54,8 +54,15 @@ CANDIDATE_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.5-flash",
 ]
-UZ_TZ = timezone(timedelta(hours=5))  # Ўзбекистон вақти (UTC+5)
-MAX_DAILY_GEMINI_CALLS = 18           # Кунлик сўров лимити
+UZ_TZ = timezone(timedelta(hours=5))
+MAX_DAILY_GEMINI_CALLS = 18
+
+# Аниқ нозик вақт оралиқлари (Ўзбекистон вақти билан, дақиқаларда)
+# 12:00-13:30 -> 720..810 | 17:30-19:30 -> 1050..1170
+WINDOWS_UZ = [
+    (720, 810, "Лондон ойнаси (12:00–13:30 UZ)"),
+    (1050, 1170, "Нью-Йорк / АҚШ макро ойнаси (17:30–19:30 UZ)"),
+]
 
 RSS_FEEDS = [
     ("FXStreet Forex", "https://xml.fxstreet.com/news/forex-news/index.xml"),
@@ -65,15 +72,6 @@ RSS_FEEDS = [
     ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
 ]
 
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-processed_urls = set()
-
-daily_state = {
-    "date": None,
-    "calls": 0,
-}
-
-# Фақат кучли макроиқтисодий ва глобал бозор катализаторлари
 MARKET_IMPACT_KEYWORDS = (
     "cpi", "inflation", "fomc", "fed", "federal reserve", "powell",
     "interest rate", "rate cut", "rate hike", "nfp", "non-farm", "nonfarm",
@@ -86,7 +84,6 @@ MARKET_IMPACT_KEYWORDS = (
     "nasdaq", "us100", "dxy", "crude oil", "wti", "opec"
 )
 
-# Шовқин, маҳаллий бозорлар ва техник тахмин сарлавҳаларини кесиш
 NOISE_KEYWORDS = (
     "24k", "22k", "18k", "retail rates", "city retail", "jewellery", "jewelry",
     "visakhapatnam", "andhra pradesh", "mumbai", "delhi", "chennai",
@@ -113,16 +110,23 @@ MARKET_SYMBOLS = {
     "WTI Oil": (["CL=F", "USO"], 2),
 }
 
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+processed_urls = set()
+daily_state = {"date": None, "calls": 0}
+sent_in_current_window = {"window_key": None, "sent": False}
+
 
 def get_uz_now() -> datetime:
     return datetime.now(UZ_TZ)
 
 
-def get_schedule_info(now_uz: datetime):
-    minutes = now_uz.hour * 60 + now_uz.minute
-    if (960 <= minutes <= 1230) or (minutes >= 1290) or (minutes < 30):
-        return True, 600, "24/7 Юқори фаоллик (АҚШ / Канада / High-Impact — ҳар 10 дақиқада)"
-    return True, 900, "24/7 Фаол режим (ҳар 15 дақиқада)"
+def get_active_window(now_uz: datetime):
+    mins = now_uz.hour * 60 + now_uz.minute
+    for start_m, end_m, label in WINDOWS_UZ:
+        if start_m <= mins <= end_m:
+            key = f"{now_uz.strftime('%Y-%m-%d')}_{start_m}_{end_m}"
+            return key, label
+    return None, None
 
 
 def can_call_gemini(now_uz: datetime) -> bool:
@@ -168,13 +172,7 @@ def is_market_relevant_article(title: str, description: str) -> bool:
     return any(kw in combined for kw in MARKET_IMPACT_KEYWORDS)
 
 
-def is_high_impact_analysis(analysis_text: str) -> bool:
-    if not analysis_text:
-        return False
-    return "high-impact" in analysis_text.lower()
-
-
-# --- 3. Техник индикаторлар (EMA-20, RSI-14, Support/Resistance) ---
+# --- 3. Техник индикаторлар ---
 def compute_ema(prices: list, period: int = 20) -> float:
     if len(prices) < period:
         return sum(prices) / len(prices)
@@ -256,7 +254,7 @@ def fetch_all_market_data() -> str:
                 snap = fetch_technical_snapshot(sym, decimals)
                 break
             except Exception as e:
-                log(f"Техник маълумот олишда хато ({label} / {sym}): {e}")
+                log(f"Техник маълумот хатоси ({label} / {sym}): {e}")
 
         if snap:
             blocks.append(
@@ -271,21 +269,6 @@ def fetch_all_market_data() -> str:
     return "\n".join(blocks)
 
 
-def fetch_simple_prices() -> str:
-    lines = []
-    for label, (candidates, decimals) in MARKET_SYMBOLS.items():
-        price_val = None
-        for sym in candidates:
-            try:
-                snap = fetch_technical_snapshot(sym, decimals)
-                price_val = snap["price"]
-                break
-            except Exception:
-                continue
-        lines.append(f"• {label}: {price_val if price_val is not None else 'Noma’lum'}")
-    return "\n".join(lines)
-
-
 # --- 4. Янгиликларни олиш ---
 def fetch_all_rss_feeds():
     headers = {
@@ -298,19 +281,12 @@ def fetch_all_rss_feeds():
             resp = requests.get(feed_url, headers=headers, timeout=15)
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
-            count = 0
             for item in root.findall(".//item")[:7]:
                 title = (item.findtext("title") or "").strip()
                 link = (item.findtext("link") or "").strip()
                 desc = clean_html_tags(item.findtext("description") or "")
                 if title and link:
-                    articles.append({
-                        "title": title,
-                        "description": desc,
-                        "url": link,
-                    })
-                    count += 1
-            log(f"RSS [{feed_name}]: {count} та мақола олинди.")
+                    articles.append({"title": title, "description": desc, "url": link})
         except Exception as e:
             log(f"RSS [{feed_name}] хатоси: {e}")
     return articles
@@ -319,7 +295,6 @@ def fetch_all_rss_feeds():
 def fetch_newsapi_articles():
     if not NEWS_API_KEY:
         return []
-
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": (
@@ -331,22 +306,19 @@ def fetch_newsapi_articles():
         "pageSize": 15,
         "apiKey": NEWS_API_KEY,
     }
-
     articles = []
     try:
         response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
-        data = response.json()
-        for art in data.get("articles", []):
+        for art in response.json().get("articles", []):
             if art.get("url") and art.get("title"):
                 articles.append({
                     "title": art.get("title", "").strip(),
                     "description": clean_html_tags(art.get("description") or ""),
                     "url": art.get("url", "").strip(),
                 })
-        log(f"NewsAPI'дан {len(articles)} та мақола олинди.")
     except Exception as e:
-        log(f"NewsAPI олишда хато: {e}")
+        log(f"NewsAPI хатоси: {e}")
     return articles
 
 
@@ -354,180 +326,141 @@ def fetch_combined_news():
     return fetch_all_rss_feeds() + fetch_newsapi_articles()
 
 
-# --- 5. Gemini орқали Фундаментал + Техник таҳлил ---
-def analyze_news(title: str, description: str, market_data_text: str) -> str:
+# --- 5. Битта нозик сигнал яратиш ---
+def analyze_single_best_signal(title: str, description: str, market_data_text: str, window_label: str) -> str:
     if not client:
-        log("GEMINI_API_KEY sozlanmagan.")
         return ""
 
     prompt = (
-        "Sen ehtiyotkor va aniq fundamental hamda texnik treyder-tahlilchisisisan.\n"
-        "Quyida makroiqtisodiy yangilik va 6 ta aktivning JORIY REAL NARXLARI hamda H1 TEXNIK INDIKATORLARI (EMA-20, RSI-14, Support/Resistance) berilgan.\n"
+        "Sen tajribali fundamental va texnik treyder-tahlilchisisisan.\n"
+        f"Hozirgi vaqt oynasi: {window_label}.\n"
+        "Quyidagi makroiqtisodiy yangilik va 6 ta aktivning joriy narx + EMA-20 + RSI-14 + Support/Resistance ma'lumotlariga qarab "
+        "FAQAT BITTA eng kuchli va eng aniq signalga ega aktivni tanla.\n"
         "Qoidalar:\n"
-        "1. Faqat berilgan real narxlar va texnik darajalarga tayangan holda hisobla.\n"
-        "2. Agar aktivda trend noaniq bo'lsa, narx EMA-20 atrofida ikkilanayotgan bo'lsa yoki yangilik ta'siri noaniq bo'lsa, majburan Buy/Sell bermasdan 'Kuzatuv' deb yoz.\n"
-        "3. Buy/Sell berilganda SL doim mantiqiy himoya nuqtasida (Support/Resistance yoki EMA-20 ortida) va TP real texnik maqsadda bo'lsin, risk/reward kamida 1:1.2 atrofida bo'lishiga intil.\n\n"
-        f"JORIY BOZOR VA TEXNIK MA'LUMOTLAR:\n{market_data_text}\n\n"
-        f"YANGILIK SARLAVHASI: {title or 'Noma’lum'}\n"
-        f"YANGILIK TAVSIFI: {description or 'Tavsif mavjud emas'}\n\n"
-        "Tahlilni O'ZBEK TILIDA quyidagi tuzilishda yoz. Markdown belgilarini (###, ####, **, ---) umuman ishlatma, matn toza ko'rinsin:\n\n"
-        "1. Yangilikning qisqa mazmuni\n"
-        "(1-2 gapda yangilik mohiyati va oxirida qavs ichida ta'sir darajasi: (High-Impact), (O'rtacha) yoki (Past)).\n\n"
-        "2. Bozor tahlili va savdo mo‘ljallari\n\n"
-        "Har bir aktiv uchun (XAU/USD (Oltin), GBP/USD, USD/JPY, USD/CAD, Nasdaq (US100), WTI Oil) quyidagi ko'rinishda yoz:\n\n"
-        "[Aktiv nomi] (Joriy narx: [joriy narx])\n"
-        "- Ta'siri va izoh: (Fundamental sabab + EMA-20, RSI va Support/Resistance texnik holatiga tayangan 1-2 gaplik aniq izoh)\n"
-        "- Yo'nalish: Buy, Sell yoki Kuzatuv\n"
-        "- Entry: (joriy narxga mos aniq kirish narxi yoki oralig'i; agar Kuzatuv bo'lsa yozma)\n"
-        "- SL: (Support/Resistance ortiga qo'yilgan aniq Stop Loss narxi; agar Kuzatuv bo'lsa yozma)\n"
-        "- TP: (texnik maqsad aniq Take Profit narxi; agar Kuzatuv bo'lsa yozma)\n\n"
-        "Ushbu tahlil moliyaviy maslahat emas, faqat tahliliy/o'quv mo'ljali hisoblanadi."
+        "1. 6 ta aktivni uzun ro'yxat qilib yozma — faqat eng ishonchli BITTA aktivni ber.\n"
+        "2. Agar hech bir aktivda aniq ustunlik yoki trend tasdig'i bo'lmasa, faqat 'SIGNAL YOQ: Kuzatuv rejimi' deb yoz.\n"
+        "3. Signal berilganda MT5 da Stop Hunt (ilk 15-30 daqiqa soxta impuls) tugab, narx so'nggi soyadan qaytganidan keyin kirishni eslat.\n"
+        "4. Markdown belgilarini (###, **, ---) umuman ishlatma.\n\n"
+        f"JORIY BOZOR MA'LUMOTLARI:\n{market_data_text}\n\n"
+        f"YANGILIK: {title}\n"
+        f"TAVSIF: {description or 'Tavsif yoq'}\n\n"
+        "Javobni faqat quyidagi ko'rinishda yoz:\n"
+        "Oyna: [vaqt oynasi]\n"
+        "Aktiv: [bitta aktiv nomi] (Joriy narx: [narx])\n"
+        "Yo'nalish: [Buy yoki Sell]\n"
+        "Entry: [kirish narxi yoki oralig'i]\n"
+        "SL: [himoya Stop Loss narxi]\n"
+        "TP: [maqsad Take Profit narxi]\n"
+        "Nozik qoida: [15-30 daqiqa Stop Hunt / wick qaytishini kutib kirish bo'yicha 1 qisqa izoh]\n\n"
+        "Bu tahlil moliyaviy maslahat emas, faqat o'quv/tahliliy mo'ljal."
     )
 
     for model_name in CANDIDATE_MODELS:
         for attempt in range(1, 3):
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                raw_text = (response.text or "").strip()
-                cleaned_text = clean_telegram_formatting(raw_text)
-                if cleaned_text:
-                    log(f"Таҳлил муваффақиятли яратилди (модел: {model_name}).")
-                    return cleaned_text
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                cleaned = clean_telegram_formatting((response.text or "").strip())
+                if cleaned:
+                    return cleaned
             except Exception as e:
                 err_str = str(e)
                 log(f"Gemini хатоси [{model_name} | уриниш {attempt}/2]: {err_str}")
                 if "404" in err_str or "NOT_FOUND" in err_str:
                     break
-                is_retryable = ("503" in err_str) or ("UNAVAILABLE" in err_str) or ("500" in err_str) or ("429" in err_str)
-                if is_retryable and attempt < 2:
+                if ("503" in err_str or "UNAVAILABLE" in err_str or "500" in err_str or "429" in err_str) and attempt < 2:
                     time.sleep(3)
                 else:
                     break
-
     return ""
 
 
 def send_telegram_message(text: str) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log("TELEGRAM_TOKEN yoki TELEGRAM_CHAT_ID sozlanmagan.")
         return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": False,
-    }
-
     try:
-        response = requests.post(url, json=payload, timeout=20)
-        response.raise_for_status()
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": True},
+            timeout=20,
+        )
+        resp.raise_for_status()
         return True
     except Exception as e:
-        log(f"Telegramga yuborishda xato: {e}")
+        log(f"Telegram хатоси: {e}")
         return False
 
 
 def notify_startup():
     now_str = get_uz_now().strftime("%H:%M")
-    try:
-        prices_text = fetch_simple_prices()
-        msg = (
-            f"✅ Бот 24/7 режимида ишга тушди ({now_str} UZ)\n\n"
-            f"Жонли нархлар ушланди:\n{prices_text}\n\n"
-            f"Фақат аниқ (High-Impact) макро-сигналлар кутилмоқда..."
-        )
-        send_telegram_message(msg)
-        log("Ишга тушганлик ҳақида тасдиқловчи хабар юборилди.")
-    except Exception as e:
-        log(f"Startup хабарида хато: {e}")
+    send_telegram_message(
+        f"✅ Бот 24/7 режимида ишга тушди ({now_str} UZ)\n"
+        f"Аниқ вақт ойнаси: 12:00–13:30 ва 17:30–19:30 UZ\n"
+        f"Режим: Ҳар ойнада фақат 1 та нозик сигнал"
+    )
 
 
 def main_loop():
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=keep_alive_loop, daemon=True).start()
-
-    log(f"Moliya bot 24/7 rejimda ishga tushdi. Modellar: {CANDIDATE_MODELS}")
     notify_startup()
 
-    cycle_num = 0
     while True:
-        cycle_num += 1
         now_uz = get_uz_now()
-        _, sleep_seconds, mode_label = get_schedule_info(now_uz)
-        log(f"=== [Цикл #{cycle_num} | {now_uz.strftime('%H:%M')} UZ] {mode_label} ===")
+        window_key, window_label = get_active_window(now_uz)
+
+        if not window_key:
+            log(f"[{now_uz.strftime('%H:%M')} UZ] Нозик вақт ойнасидан ташқари — лимит тежалмоқда (15 дақиқа кутиш).")
+            time.sleep(900)
+            continue
+
+        if sent_in_current_window["window_key"] != window_key:
+            sent_in_current_window["window_key"] = window_key
+            sent_in_current_window["sent"] = False
+
+        if sent_in_current_window["sent"]:
+            log(f"[{now_uz.strftime('%H:%M')} UZ] {window_label} учун нозик сигнал аллақачон берилган.")
+            time.sleep(600)
+            continue
 
         if not can_call_gemini(now_uz):
-            log(f"Кунлик Gemini лимити ({MAX_DAILY_GEMINI_CALLS} та сўров) тўлди. Эртанги кунгача кутилмоқда...")
+            log("Кунлик бепул Gemini лимити тўлди.")
             time.sleep(1800)
             continue
 
-        new_count = 0
         try:
             articles = fetch_combined_news()
-            log(f"Цикл #{cycle_num}: Жами {len(articles)} та мақола олинди, текширилмоқда...")
+            for art in articles:
+                url = art.get("url")
+                if not url or url in processed_urls:
+                    continue
+                processed_urls.add(url)
 
-            skipped_seen = 0
-            skipped_noise = 0
-            skipped_low_impact = 0
-
-            for article in articles:
-                if not can_call_gemini(get_uz_now()):
-                    log("Кунлик сўров лимитига етилди.")
-                    break
-
-                if new_count >= 1:
-                    break
-
-                article_url = article.get("url")
-                if not article_url or article_url in processed_urls:
-                    skipped_seen += 1
+                title = art.get("title", "")
+                desc = art.get("description", "")
+                if not is_market_relevant_article(title, desc):
                     continue
 
-                processed_urls.add(article_url)
-                title = article.get("title") or "Sarlavhasiz yangilik"
-                description = article.get("description") or ""
+                market_data = fetch_all_market_data()
+                signal_text = analyze_single_best_signal(title, desc, market_data, window_label)
+                register_gemini_call(get_uz_now())
 
-                if not is_market_relevant_article(title, description):
-                    skipped_noise += 1
-                    continue
-
-                log(f"Мос макро-янгилик топилди! Таъсир даражаси текширилмоқда: {title[:65]}...")
-                market_data_text = fetch_all_market_data()
-                analysis = analyze_news(title, description, market_data_text)
-
-                if analysis:
-                    register_gemini_call(get_uz_now())
-                    if not is_high_impact_analysis(analysis):
-                        skipped_low_impact += 1
-                        log(f"Таҳлил (High-Impact) эмас, Telegram'га юборилмади: {title[:55]}...")
-                        continue
-
-                    message = (
-                        f"📊 Fundamental Tahlil ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
-                        f"📰 {title}\n\n"
-                        f"{analysis}\n\n"
-                        f"🔗 Manba: {article_url}"
+                if signal_text and "SIGNAL YOQ" not in signal_text.upper():
+                    msg = (
+                        f"🎯 Нозик Сигнал ({get_uz_now().strftime('%H:%M')} UZ)\n\n"
+                        f"{signal_text}\n\n"
+                        f"📰 {title}\n"
+                        f"🔗 {url}"
                     )
-                    if send_telegram_message(message):
-                        new_count += 1
-                        log(f"High-Impact таҳлил юборилди! Бугунги сўровлар: {daily_state['calls']}/{MAX_DAILY_GEMINI_CALLS}")
-                    time.sleep(2)
-
-            log(
-                f"Цикл #{cycle_num} якунланди: Кўрилди={len(articles)} | "
-                f"Аввал ўқилган={skipped_seen} | Шовқин={skipped_noise} | "
-                f"Паст/Ўртача={skipped_low_impact} | Юборилди={new_count}"
-            )
-
+                    if send_telegram_message(msg):
+                        sent_in_current_window["sent"] = True
+                        log(f"Нозик сигнал юборилди ({window_label}).")
+                        break
+                else:
+                    log("Мос келган янгиликда ҳозирча аниқ сигнал чиқмади.")
         except Exception as e:
-            log(f"Асосий циклда хато: {e}")
+            log(f"Цикл хатоси: {e}")
 
-        log(f"Навбатдаги текширувгача {sleep_seconds} сония кутилмоқда...")
-        time.sleep(sleep_seconds)
+        time.sleep(300)
 
 
 if __name__ == "__main__":
